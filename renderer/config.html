@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pede+ Print</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #161616;
+      color: #e5e5e5;
+      padding: 20px;
+      font-size: 13px;
+      user-select: none;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
+    .app-name {
+      font-size: 15px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .app-sub {
+      font-size: 11px;
+      color: #666;
+      margin-top: 1px;
+    }
+
+    #status {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 20px;
+      background: #2a2a2a;
+      border: 1px solid #3a3a3a;
+    }
+
+    #status.connected    { color: #4ade80; border-color: #166534; background: #052e16; }
+    #status.disconnected { color: #f87171; border-color: #7f1d1d; background: #2d1010; }
+
+    .section {
+      background: #1e1e1e;
+      border: 1px solid #2d2d2d;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 10px;
+    }
+
+    .section-title {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #555;
+      margin-bottom: 10px;
+    }
+
+    .field { margin-bottom: 10px; }
+    .field:last-child { margin-bottom: 0; }
+
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: #999;
+      margin-bottom: 4px;
+    }
+
+    input[type="text"],
+    input[type="password"],
+    select {
+      width: 100%;
+      padding: 7px 10px;
+      background: #111;
+      border: 1px solid #2d2d2d;
+      border-radius: 6px;
+      color: #e5e5e5;
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color .15s;
+    }
+
+    input[type="text"]:focus,
+    input[type="password"]:focus,
+    select:focus { border-color: #FF6B00; }
+
+    select option { background: #1e1e1e; }
+
+    .two-col { display: flex; gap: 8px; }
+    .two-col .field { flex: 1; }
+
+    .btn-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    button {
+      padding: 8px 16px;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      font-family: inherit;
+      transition: opacity .15s;
+    }
+    button:active { opacity: .75; }
+
+    .btn-primary  { background: #FF6B00; color: #fff; }
+    .btn-test     { background: #2a2a2a; color: #ccc; border: 1px solid #3a3a3a; }
+    .btn-test:hover { background: #333; }
+
+    #feedback {
+      font-size: 11px;
+      margin-left: auto;
+      opacity: 0;
+      transition: opacity .4s;
+    }
+
+    .no-printers {
+      font-size: 11px;
+      color: #f87171;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div>
+      <div class="app-name">Pede+ Print</div>
+      <div class="app-sub">Agente de impressão automática</div>
+    </div>
+    <div id="status" class="disconnected">● Desconectado</div>
+  </div>
+
+  <!-- Estabelecimento -->
+  <div class="section">
+    <div class="section-title">Dados do estabelecimento</div>
+
+    <div class="field">
+      <label for="tenant-name">Nome (aparece no cabeçalho do cupom)</label>
+      <input id="tenant-name" type="text" placeholder="Restaurante Exemplo" autocomplete="off" />
+    </div>
+
+    <div class="field">
+      <label for="tenant-address">Endereço</label>
+      <input id="tenant-address" type="text" placeholder="Rua das Flores, 123 - Centro" autocomplete="off" />
+    </div>
+
+    <div class="two-col">
+      <div class="field">
+        <label for="tenant-phone">Telefone</label>
+        <input id="tenant-phone" type="text" placeholder="(11) 99999-9999" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="tenant-cnpj">CNPJ</label>
+        <input id="tenant-cnpj" type="text" placeholder="00.000.000/0001-00" autocomplete="off" />
+      </div>
+    </div>
+  </div>
+
+  <!-- Connection -->
+  <div class="section">
+    <div class="section-title">Conexão com o servidor</div>
+
+    <div class="field">
+      <label for="server-url">URL do servidor</label>
+      <input id="server-url" type="text" placeholder="http://localhost:3000" autocomplete="off" />
+    </div>
+
+    <div class="field">
+      <label for="token">Chave do restaurante — gere em Configurações → Impressoras → Pede+ Print</label>
+      <input id="token" type="password" placeholder="pk_live_..." autocomplete="off" />
+      <div id="token-hint" style="font-size:10px;margin-top:4px;display:none;color:#f87171;">
+        ⚠️ Parece um JWT — cole a chave gerada no painel (começa com pk_live_)
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn-test" id="btn-pair">Parear / validar chave</button>
+      <span id="pair-feedback" style="font-size:11px;margin-left:auto;"></span>
+    </div>
+  </div>
+
+  <!-- Impressora -->
+  <div class="section">
+    <div class="section-title">Impressora ESC/POS</div>
+
+    <div class="field">
+      <label for="printer-model">Modelo da impressora</label>
+      <select id="printer-model">
+        <option value="dr800" selected>Daruma DR800 (padrão)</option>
+        <option value="generic80">Genérica 80mm ESC/POS</option>
+        <option value="generic58">Genérica 58mm ESC/POS</option>
+        <option value="custom">Outra / personalizada</option>
+      </select>
+      <div style="font-size:10px;color:#666;margin-top:3px;">
+        Define automaticamente colunas e code page — ajuste abaixo se necessário.
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="printer-name">Impressora (Windows Spooler)</label>
+      <select id="printer-name">
+        <option value="">-- Carregando... --</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="com-port">Porta Serial direta — recomendado para Daruma (ex: COM7)</label>
+      <input id="com-port" type="text" list="com-ports" placeholder="COM7  (deixe em branco para usar o spooler acima)" autocomplete="off" />
+      <datalist id="com-ports"></datalist>
+      <div style="font-size:10px;color:#4ade80;margin-top:3px;">
+        ★ Porta serial bypassa o driver Windows e evita corrupção de dados ESC/POS
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="field">
+        <label for="balcao-cols">Largura do cupom</label>
+        <select id="balcao-cols">
+          <option value="32">32 colunas (58mm)</option>
+          <option value="40">40 colunas (57mm — Daruma DR800)</option>
+          <option value="42">42 colunas (70mm)</option>
+          <option value="48" selected>48 colunas (80mm)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="encoding">Codificação (acentos)</label>
+        <select id="encoding">
+          <option value="cp1252" selected>CP1252 (Daruma DR800)</option>
+          <option value="cp850">CP850</option>
+          <option value="cp860">CP860 (Português)</option>
+          <option value="utf8">UTF-8</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="codepage">Code page ESC t n (0–255)</label>
+      <input id="codepage" type="text" inputmode="numeric" placeholder="7  (Daruma DR800)" autocomplete="off" />
+      <div style="font-size:10px;color:#666;margin-top:3px;">
+        Daruma DR800 = 7. Genéricas costumam usar 2 (CP850) ou 16 (CP1252).
+      </div>
+    </div>
+
+    <div class="field">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+        <input id="logo-enabled" type="checkbox" style="width:auto;margin:0;" />
+        Imprimir logo no comprovante (apenas impressoras compativeis)
+      </label>
+      <div style="font-size:10px;color:#f59e0b;margin-top:3px;">
+        A Daruma DR800 pode imprimir caracteres invalidos. Use apenas em impressoras com suporte a raster (Epson/Elgin).
+      </div>
+    </div>
+
+    <button class="btn-test" id="btn-test-balcao">Imprimir teste</button>
+  </div>
+
+
+  <!-- Actions -->
+  <div class="btn-row">
+    <button class="btn-primary" id="btn-save">Salvar configurações</button>
+    <span id="feedback"></span>
+  </div>
+
+  <script src="config.js"></script>
+</body>
+</html>

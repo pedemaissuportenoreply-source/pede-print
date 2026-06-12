@@ -1,0 +1,15 @@
+node_modules/
+dist/
+out/
+release/
+.DS_Store
+*.log
+
+# Ambiente / credenciais — nunca commitar
+.env
+.env.*
+*.pem
+*.p12
+*.pfx
+*.key
+*.crt

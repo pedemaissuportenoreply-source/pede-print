@@ -1,0 +1,78 @@
+{
+  "name": "pede-print",
+  "version": "1.0.0",
+  "description": "Agente de impressão automática para o Pede+",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test-logo": "node test-logo.js",
+    "test-codepage": "node test-codepage.js",
+    "test-inverted": "node test-inverted.js",
+    "build": "electron-builder --win --x64 --publish never",
+    "dist": "electron-builder --win --x64 --publish never",
+    "publish": "electron-builder --win --x64 --publish always",
+    "postinstall": "npx electron-rebuild -f -w @thiagoelg/node-printer -- --msvs_version=2022",
+    "rebuild": "npx electron-rebuild -f -w @thiagoelg/node-printer -- --msvs_version=2022"
+  },
+  "dependencies": {
+    "@thiagoelg/node-printer": "^0.6.2",
+    "electron-log": "^5.4.4",
+    "electron-store": "^8.2.0",
+    "electron-updater": "^6.8.9",
+    "iconv-lite": "^0.6.3",
+    "jimp": "^0.22.12",
+    "qrcode": "^1.5.4",
+    "sharp": "^0.34.5",
+    "socket.io-client": "^4.7.0"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.0.0",
+    "electron-rebuild": "^3.2.9"
+  },
+  "build": {
+    "appId": "com.pedemais.print",
+    "productName": "Pede+ Print",
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "socket.js",
+      "printer.js",
+      "updater.js",
+      "src/**",
+      "config-window.js",
+      "renderer/**"
+    ],
+    "asarUnpack": [
+      "**/node_modules/@thiagoelg/node-printer/**",
+      "**/node_modules/sharp/**",
+      "**/node_modules/@img/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Pede+ Print",
+      "runAfterFinish": true,
+      "artifactName": "pede-print-setup-${version}.exe"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "pedemaissuportenoreply-source",
+        "repo": "pede-print"
+      }
+    ]
+  }
+}
