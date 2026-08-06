@@ -11,13 +11,15 @@ let slowTimer      = null
 let _cfg           = null
 let _onEvent       = null
 let _onStatus      = null
+let _onRevoked     = null
 
 // ─── Public ───────────────────────────────────────────────────────────────────
 
-function createSocket(cfg, onEvent, onStatus) {
-  _cfg      = cfg
-  _onEvent  = onEvent
-  _onStatus = onStatus
+function createSocket(cfg, onEvent, onStatus, onRevoked) {
+  _cfg       = cfg
+  _onEvent   = onEvent
+  _onStatus  = onStatus
+  _onRevoked = onRevoked
   _connect()
 }
 
@@ -73,6 +75,14 @@ function _connect() {
     console.log('[socket] evento recebido:', eventName, JSON.stringify(args, null, 2))
   })
 
+  // Credencial revogada no painel: o servidor avisa e desconecta na hora. Sem
+  // isto o agente só descobriria no próximo handshake e seguiria imprimindo
+  // para um estabelecimento que já o expulsou.
+  socket.on('agente:revogado', (data) => {
+    console.log('[socket] credencial revogada pelo servidor:', JSON.stringify(data || {}))
+    _onRevoked?.(data || {})
+  })
+
   socket.on('disconnect', (reason) => {
     console.log('[socket] desconectado. motivo:', reason)
     if (reason === 'io server disconnect') {
@@ -94,6 +104,14 @@ function _connect() {
 
   // Balcão online: order:new → imprime comanda de balcão
   socket.on('order:new', (data) => {
+    // O MESMO order:new chega 2x: pela sala do tenant (SEM flags) e pela sala da
+    // cozinha (COM _kitchenOnly/_cozinhaAutoPrint). Só a via da cozinha decide a
+    // impressão da comanda — ignorar a do tenant evita duplicar E garante que o
+    // gate de auto-print leia a flag correta (senão cai sempre no popup).
+    if (data?._kitchenOnly !== true && data?._cozinhaAutoPrint === undefined) {
+      console.log('[socket] order:new sem flags de cozinha (via tenant) — ignorado')
+      return
+    }
     const raw = JSON.stringify(data, null, 2)
     console.log('[KITCHEN RAW] (order:new)', raw)
     console.log('[QR ORDER]', 'order:new', '| type:', data.type, '| channel:', data.channel ?? data.canalOrigem, '| _printType:', data._printType, '| has items:', !!(data.items ?? data.itens))

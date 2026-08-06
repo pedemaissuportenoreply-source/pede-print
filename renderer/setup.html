@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pede+ Print</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #161616; color: #e5e5e5;
+      padding: 22px; font-size: 13px; user-select: none;
+    }
+
+    /* ── Cabeçalho ────────────────────────────────────────────────── */
+    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+    .app-name { font-size: 16px; font-weight: 700; color: #fff; }
+    .app-ver { font-size: 10px; color: #555; margin-top: 2px; cursor: default; }
+    #status {
+      font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 20px;
+      background: #2a2a2a; border: 1px solid #3a3a3a;
+    }
+    #status.connected    { color: #4ade80; border-color: #166534; background: #052e16; }
+    #status.disconnected { color: #f87171; border-color: #7f1d1d; background: #2d1010; }
+
+    /* ── Conta conectada (sempre visível quando pareado) ──────────── */
+    .account {
+      display: none; align-items: center; gap: 10px; margin-bottom: 14px;
+      background: #1a1512; border: 1px solid #3a2a1a; border-radius: 9px;
+      padding: 9px 12px;
+    }
+    .account.on { display: flex; }
+    .account-who { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+    .account-label { font-size: 10px; color: #8a7a6a; text-transform: uppercase; letter-spacing: .06em; }
+    .account-name {
+      font-size: 13px; font-weight: 700; color: #FFB27A;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    /* ── Trilha do assistente ─────────────────────────────────────── */
+    .steps { display: flex; align-items: center; gap: 6px; margin-bottom: 18px; }
+    .step { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #555; }
+    .step-dot {
+      width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+      background: #2a2a2a; border: 1px solid #3a3a3a; font-size: 10px; font-weight: 700; color: #777;
+    }
+    .step.active .step-dot { background: #FF6B00; border-color: #FF6B00; color: #fff; }
+    .step.done .step-dot   { background: #052e16; border-color: #166534; color: #4ade80; }
+    .step.active { color: #fff; font-weight: 600; }
+    .step.done   { color: #4ade80; }
+    .step-bar { flex: 1; height: 1px; background: #2d2d2d; }
+
+    /* ── Painéis ──────────────────────────────────────────────────── */
+    .panel { display: none; }
+    .panel.on { display: block; }
+
+    .card {
+      background: #1e1e1e; border: 1px solid #2d2d2d; border-radius: 10px;
+      padding: 18px; margin-bottom: 12px;
+    }
+    .card-title { font-size: 15px; font-weight: 700; color: #fff; margin-bottom: 4px; }
+    .card-sub { font-size: 12px; color: #888; margin-bottom: 16px; line-height: 1.5; }
+
+    .field { margin-bottom: 12px; }
+    label { display: block; font-size: 11px; font-weight: 600; color: #999; margin-bottom: 5px; }
+    input[type="text"], input[type="password"], input[type="email"], select {
+      width: 100%; padding: 9px 11px; background: #111; border: 1px solid #2d2d2d;
+      border-radius: 6px; color: #e5e5e5; font-size: 13px; font-family: inherit;
+      outline: none; transition: border-color .15s;
+    }
+    input:focus, select:focus { border-color: #FF6B00; }
+    select option { background: #1e1e1e; }
+
+    input.code {
+      text-align: center; letter-spacing: .5em; font-size: 20px;
+      font-weight: 700; padding: 12px; font-variant-numeric: tabular-nums;
+    }
+
+    button {
+      padding: 10px 18px; border-radius: 7px; font-size: 13px; font-weight: 600;
+      cursor: pointer; border: none; font-family: inherit; transition: opacity .15s;
+    }
+    button:active { opacity: .75; }
+    button:disabled { opacity: .45; cursor: default; }
+    .btn-primary { background: #FF6B00; color: #fff; }
+    .btn-ghost   { background: #2a2a2a; color: #ccc; border: 1px solid #3a3a3a; }
+    .btn-ghost:hover:not(:disabled) { background: #333; }
+    .btn-link {
+      background: none; border: none; color: #FF6B00; padding: 0;
+      font-size: 11px; font-weight: 600; text-decoration: underline; cursor: pointer;
+    }
+    .btn-row { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+    .btn-row .spacer { flex: 1; }
+
+    .msg { font-size: 11px; min-height: 15px; line-height: 1.45; }
+    .msg.err { color: #f87171; }
+    .msg.ok  { color: #4ade80; }
+    .msg.dim { color: #9ca3af; }
+
+    /* ── Cards de impressora (nome legível, sem jargão) ───────────── */
+    .plist { display: flex; flex-direction: column; gap: 8px; }
+    .pcard {
+      background: #161616; border: 1px solid #2d2d2d; border-radius: 9px;
+      padding: 12px 14px; cursor: pointer; transition: border-color .15s;
+    }
+    .pcard:hover { border-color: #3f3f3f; }
+    .pcard.sel { border-color: #FF6B00; background: #1a1512; }
+    .pcard.active { border-color: #FF6B00; background: #1a1512; cursor: default; }
+    .pcard-top { display: flex; align-items: flex-start; gap: 10px; }
+    .pcard-radio { width: auto; margin: 3px 0 0 0; flex-shrink: 0; accent-color: #FF6B00; }
+    .pcard-body { flex: 1; min-width: 0; }
+    .pcard-x {
+      background: none; border: none; color: #777; font-size: 15px; line-height: 1;
+      padding: 2px 6px; border-radius: 5px; flex-shrink: 0;
+    }
+    .pcard-x:hover { background: #7f1d1d; color: #fca5a5; }
+
+    /* ── "+ Adicionar impressora" (dropdown com busca) ─────────────── */
+    .addwrap { position: relative; margin-top: 10px; }
+    .btn-add {
+      background: none; border: 1px dashed #3a3a3a; color: #FF6B00;
+      padding: 9px 14px; font-size: 12px; width: 100%; text-align: left;
+    }
+    .btn-add:hover:not(:disabled) { border-color: #FF6B00; }
+    .adddrop {
+      display: none; position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 4px);
+      background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 9px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.45); padding: 8px; max-height: 260px; overflow: auto;
+    }
+    .adddrop.on { display: block; }
+    .adddrop input { margin-bottom: 6px; }
+    .aitem {
+      padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 12px;
+    }
+    .aitem:hover { background: #2a2a2a; }
+    .aitem-name { color: #f0f0f0; font-weight: 600; }
+    .aitem-how { color: #777; font-size: 10px; margin-top: 2px; }
+    .aitem-empty { padding: 10px; font-size: 11px; color: #777; text-align: center; }
+    .pcard-name { font-size: 13px; font-weight: 600; color: #f0f0f0; }
+    .pcard-how  { font-size: 11px; color: #777; margin-top: 2px; }
+    .pcard-tools { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    .pcard-tools .sector { min-width: 140px; }
+    .pcard-tools button { padding: 6px 12px; font-size: 11px; }
+    .pcard-fb { font-size: 10px; }
+
+    .empty {
+      border: 1px dashed #3a3a3a; border-radius: 9px; padding: 20px;
+      text-align: center; font-size: 12px; color: #888; line-height: 1.6;
+    }
+
+    /* ── Pronto ───────────────────────────────────────────────────── */
+    .done-wrap { text-align: center; padding: 10px 0 4px; }
+    .done-ring {
+      width: 58px; height: 58px; border-radius: 50%; margin: 0 auto 14px;
+      display: grid; place-items: center; font-size: 28px;
+      background: #052e16; border: 2px solid #166534; color: #4ade80;
+    }
+    .done-title { font-size: 17px; font-weight: 700; color: #fff; margin-bottom: 6px; }
+    .done-sub { font-size: 12px; color: #888; line-height: 1.6; margin-bottom: 4px; }
+    .done-facts {
+      text-align: left; background: #161616; border: 1px solid #2d2d2d;
+      border-radius: 8px; padding: 12px 14px; margin: 16px 0 0; font-size: 12px;
+    }
+    .fact { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; }
+    .fact-k { color: #888; }
+    .fact-v { color: #e5e5e5; font-weight: 600; text-align: right; word-break: break-word; }
+
+    /* ── Avançado (dev) ───────────────────────────────────────────── */
+    #advanced { display: none; }
+    #advanced.on { display: block; }
+    .adv-card { border-color: #7c4a12; background: #1c1611; }
+    .adv-tag {
+      display: inline-block; font-size: 9px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .05em; padding: 2px 7px; border-radius: 10px;
+      color: #fbbf24; border: 1px solid #fbbf24; margin-bottom: 10px;
+    }
+    .hint { font-size: 10px; color: #666; margin-top: 5px; line-height: 1.5; }
+    .foot { margin-top: 14px; display: flex; align-items: center; gap: 10px; }
+    .foot .spacer { flex: 1; }
+
+    /* ── Tema claro ───────────────────────────────────────────────── */
+    @media (prefers-color-scheme: light) {
+      body { background: #f4f4f5; color: #18181b; }
+      .app-name { color: #18181b; } .app-ver { color: #a1a1aa; }
+      #status { background: #e4e4e7; border-color: #d4d4d8; }
+      #status.connected    { color: #15803d; border-color: #86efac; background: #dcfce7; }
+      #status.disconnected { color: #b91c1c; border-color: #fca5a5; background: #fee2e2; }
+      .card { background: #fff; border-color: #e4e4e7; }
+      .card-title, .done-title { color: #18181b; }
+      .card-sub, .done-sub { color: #52525b; }
+      label { color: #52525b; }
+      input[type="text"], input[type="password"], input[type="email"], select {
+        background: #fff; border-color: #d4d4d8; color: #18181b;
+      }
+      select option { background: #fff; }
+      .btn-ghost { background: #e4e4e7; color: #3f3f46; border-color: #d4d4d8; }
+      .btn-ghost:hover:not(:disabled) { background: #d4d4d8; }
+      .step-dot { background: #e4e4e7; border-color: #d4d4d8; color: #71717a; }
+      .step.done { color: #15803d; }
+      .step.done .step-dot { background: #dcfce7; border-color: #86efac; color: #15803d; }
+      .step-bar { background: #e4e4e7; }
+      .pcard { background: #fafafa; border-color: #e4e4e7; }
+      .pcard.sel, .pcard.active { border-color: #FF6B00; background: #fff7ed; }
+      .pcard-name { color: #18181b; } .pcard-how { color: #71717a; }
+      .pcard-x { color: #71717a; }
+      .pcard-x:hover { background: #fee2e2; color: #b91c1c; }
+      .btn-add { border-color: #d4d4d8; }
+      .adddrop { background: #fff; border-color: #d4d4d8; box-shadow: 0 8px 24px rgba(0,0,0,.12); }
+      .aitem:hover { background: #f4f4f5; }
+      .aitem-name { color: #18181b; } .aitem-how { color: #71717a; }
+      .aitem-empty { color: #71717a; }
+      .empty { border-color: #d4d4d8; color: #52525b; }
+      .done-ring { background: #dcfce7; border-color: #86efac; color: #15803d; }
+      .done-facts { background: #fafafa; border-color: #e4e4e7; }
+      .fact-k { color: #71717a; } .fact-v { color: #18181b; }
+      .adv-card { background: #fffbeb; border-color: #fcd34d; }
+      .adv-tag { color: #b45309; border-color: #b45309; }
+      .hint { color: #71717a; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div>
+      <div class="app-name">Pede+ Print</div>
+      <!-- 5 cliques aqui abrem as Configurações avançadas (atalho de dev). -->
+      <div class="app-ver" id="app-version" title="">Impressão automática de pedidos</div>
+    </div>
+    <div id="status" class="disconnected">● Desconectado</div>
+  </div>
+
+  <!-- Conta conectada: fica SEMPRE visível enquanto houver pareamento. -->
+  <div id="account" class="account">
+    <div class="account-who">
+      <span class="account-label">Conectado em</span>
+      <span class="account-name" id="account-name">—</span>
+    </div>
+    <button class="btn-link" id="btn-switch-account">Trocar conta</button>
+  </div>
+
+  <div class="steps">
+    <div class="step" id="st-1"><span class="step-dot">1</span><span>Entrar</span></div>
+    <div class="step-bar"></div>
+    <div class="step" id="st-2"><span class="step-dot">2</span><span>Impressora</span></div>
+    <div class="step-bar"></div>
+    <div class="step" id="st-3"><span class="step-dot">3</span><span>Pronto</span></div>
+  </div>
+
+  <!-- ── PASSO 1: Parear por código ──────────────────────────────── -->
+  <div class="panel" id="panel-pair">
+    <div class="card">
+      <div class="card-title">Parear esta impressora</div>
+      <div class="card-sub">
+        No painel do Pede+, vá em <b>Configurações → Impressoras</b> e clique em
+        <b>Parear impressora</b>. Digite aqui o código de 6 dígitos que aparecer.
+      </div>
+
+      <div class="field">
+        <label for="pair-code">Código de pareamento</label>
+        <input id="pair-code" class="code" type="text" inputmode="numeric" maxlength="6"
+               placeholder="000000" autocomplete="off" />
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-primary" id="btn-pair">Parear</button>
+        <div class="spacer"></div>
+        <button class="btn-link" id="btn-use-password">Entrar com e-mail e senha</button>
+      </div>
+      <div class="msg" id="pair-msg" style="margin-top:10px;"></div>
+    </div>
+  </div>
+
+  <!-- ── PASSO 1 (alternativo): e-mail e senha ───────────────────── -->
+  <div class="panel" id="panel-login">
+    <div class="card">
+      <div class="card-title">Entre na sua conta Pede+</div>
+      <div class="card-sub">
+        Use o mesmo e-mail e senha do painel. Se a sua conta foi criada com o
+        Google, ela não tem senha — volte e use o código de pareamento.
+      </div>
+
+      <div class="field">
+        <label for="email">E-mail</label>
+        <input id="email" type="email" placeholder="voce@restaurante.com.br" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="field">
+        <label for="senha">Senha</label>
+        <input id="senha" type="password" placeholder="••••••••" autocomplete="off" />
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-primary" id="btn-login">Entrar</button>
+        <button class="btn-ghost" id="btn-use-code">Usar código</button>
+        <div class="spacer"></div>
+        <span class="msg" id="login-msg"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PASSO 1b: código de verificação (2FA) ───────────────────── -->
+  <div class="panel" id="panel-otp">
+    <div class="card">
+      <div class="card-title">Digite o código de verificação</div>
+      <div class="card-sub" id="otp-sub">Enviamos um código de 6 dígitos para o seu e-mail.</div>
+
+      <div class="field">
+        <label for="otp-code">Código</label>
+        <input id="otp-code" class="code" type="text" inputmode="numeric" maxlength="6"
+               placeholder="000000" autocomplete="off" />
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-primary" id="btn-otp">Confirmar</button>
+        <button class="btn-ghost" id="btn-otp-back">Voltar</button>
+        <div class="spacer"></div>
+        <button class="btn-link" id="btn-otp-resend">Reenviar código</button>
+      </div>
+      <div class="msg" id="otp-msg" style="margin-top:10px;"></div>
+    </div>
+  </div>
+
+  <!-- ── PASSO 2: Impressora ─────────────────────────────────────── -->
+  <div class="panel" id="panel-printer">
+    <div class="card">
+      <div class="card-title">Sua impressora</div>
+      <div class="card-sub" id="printer-sub">Procurando impressoras conectadas...</div>
+
+      <div class="plist" id="plist"></div>
+
+      <!-- Adicionar impressora: dropdown com busca sobre as detectadas ainda não usadas -->
+      <div class="addwrap" id="addwrap">
+        <button type="button" class="btn-add" id="btn-add">+ Adicionar impressora ▾</button>
+        <div class="adddrop" id="adddrop">
+          <input id="add-search" type="text" placeholder="Buscar pelo nome..." autocomplete="off" spellcheck="false" />
+          <div id="add-list"></div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-primary" id="btn-printer-next" disabled>Concluir</button>
+        <button class="btn-ghost" id="btn-rescan">Reescanear</button>
+        <div class="spacer"></div>
+        <span class="msg" id="printer-msg"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PASSO 3: Pronto ─────────────────────────────────────────── -->
+  <div class="panel" id="panel-done">
+    <div class="card">
+      <div class="done-wrap">
+        <div class="done-ring">✓</div>
+        <div class="done-title">Tudo pronto!</div>
+        <div class="done-sub">
+          O Pede+ Print fica na bandeja do Windows, ao lado do relógio, e imprime
+          cada pedido novo automaticamente. Pode fechar esta janela.
+        </div>
+        <div class="done-facts" id="done-facts"></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn-primary" id="btn-tray">Minimizar para a bandeja</button>
+        <button class="btn-ghost" id="btn-back-printer">Trocar impressora</button>
+        <div class="spacer"></div>
+        <button class="btn-link" id="btn-logout">Trocar conta</button>
+      </div>
+      <div class="msg" id="done-msg" style="margin-top:10px;"></div>
+    </div>
+  </div>
+
+  <!-- ── Configurações avançadas (dev): Ctrl+Shift+D ou 5x na versão ── -->
+  <div id="advanced">
+    <div class="card adv-card">
+      <div class="adv-tag">Configurações avançadas</div>
+      <div class="card-sub">
+        Só para desenvolvimento. Com o modo desligado, o agente usa sempre o
+        servidor de produção em HTTPS.
+      </div>
+
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input id="dev-mode" type="checkbox" style="width:auto;margin:0;accent-color:#FF6B00;" />
+          Usar um servidor diferente do de produção
+        </label>
+      </div>
+      <div class="field">
+        <label for="dev-url">URL do servidor</label>
+        <input id="dev-url" type="text" placeholder="http://localhost:3000" autocomplete="off" spellcheck="false" />
+        <div class="hint" id="dev-url-hint"></div>
+      </div>
+
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input id="logo-enabled" type="checkbox" style="width:auto;margin:0;accent-color:#FF6B00;" />
+          Imprimir logo no comprovante
+        </label>
+        <div class="hint">
+          Só em impressoras com suporte a raster (Epson/Elgin). A Daruma DR800 pode
+          imprimir caracteres inválidos.
+        </div>
+      </div>
+
+      <details style="margin-top:12px;">
+        <summary style="cursor:pointer;font-size:11px;color:#999;">Cabeçalho do cupom (opcional)</summary>
+        <div class="hint" style="margin:8px 0 12px;">
+          Preenchido automaticamente com os dados do restaurante no login. Só edite
+          se quiser algo diferente no cupom.
+        </div>
+        <div class="field">
+          <label for="tenant-name">Nome</label>
+          <input id="tenant-name" type="text" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="tenant-address">Endereço</label>
+          <input id="tenant-address" type="text" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="tenant-phone">Telefone</label>
+          <input id="tenant-phone" type="text" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="tenant-cnpj">CNPJ</label>
+          <input id="tenant-cnpj" type="text" autocomplete="off" />
+        </div>
+      </details>
+
+      <div class="foot">
+        <button class="btn-primary" id="btn-adv-save">Salvar</button>
+        <button class="btn-ghost" id="btn-adv-close">Fechar</button>
+        <div class="spacer"></div>
+        <span class="msg" id="adv-msg"></span>
+      </div>
+    </div>
+  </div>
+
+  <script src="setup.js"></script>
+</body>
+</html>
