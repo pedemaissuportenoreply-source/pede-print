@@ -16,6 +16,7 @@ const CHUNK_DELAY_MS = 50;
 const BAUD_RATE = 9600;
 const OPEN_RETRIES = 3;
 const OPEN_BACKOFF_MS = 500;
+const PRE_CLOSE_DELAY_MS = 200; // transmite o buffer físico antes de fechar (substitui drain)
 const POST_CLOSE_DELAY_MS = 300; // dá tempo do Windows liberar o handle da COM
 
 function delay(ms) {
@@ -25,6 +26,26 @@ function delay(ms) {
 function isLockError(err) {
   const code = err && err.code;
   return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
+}
+
+// drain() dispara FlushFileBuffers, NÃO suportado por portas COM virtuais
+// (Epson Virtual Port Driver) -> erro 50 (ERROR_NOT_SUPPORTED). Os bytes já
+// foram entregues ao SO pelo write; logo, falha de drain é NÃO-fatal.
+function isUnsupportedFlush(err) {
+  const code = err && err.code;
+  return code === 50 || code === 'ERROR_NOT_SUPPORTED' || code === 'ENOTSUP'
+    || /FlushFileBuffers|not.?supported|code 50/i.test(String((err && err.message) || ''));
+}
+
+// Tenta drenar; se a porta (virtual) não suportar o flush, ignora. Qualquer
+// outro erro de drain continua propagando.
+async function drainSafe(port) {
+  try {
+    await new Promise((resolve, reject) => port.drain((err) => (err ? reject(err) : resolve())));
+  } catch (err) {
+    if (isUnsupportedFlush(err)) return;
+    throw err;
+  }
 }
 
 function isComPort(name) {
@@ -75,16 +96,19 @@ async function sendViaSerialport(comName, buffer) {
       await new Promise((resolve, reject) => {
         port.write(chunk, (err) => (err ? reject(err) : resolve()));
       });
-      await new Promise((resolve, reject) => {
-        port.drain((err) => (err ? reject(err) : resolve()));
-      });
+      // write confirmado pelo callback; drain é best-effort (não-fatal em COM virtual).
+      await drainSafe(port);
       await delay(CHUNK_DELAY_MS);
     }
   } finally {
-    // Garante fechamento completo do handle antes de resolver
+    // Sem drain garantido: aguarda a transmissão física antes de fechar.
+    await delay(PRE_CLOSE_DELAY_MS);
+    // Fechamento nunca derruba a impressão que já saiu.
     await new Promise((resolve) => {
-      if (!port.isOpen) return resolve();
-      port.close(() => resolve());
+      try {
+        if (!port.isOpen) return resolve();
+        port.close(() => resolve());
+      } catch { resolve(); }
     });
   }
 
@@ -134,14 +158,17 @@ async function _runJob(comName, buffer) {
   }
 }
 
-// Fila: garante que apenas um job abra a COM por vez (mutex via promise chain).
-let _queue = Promise.resolve();
+// Fila POR PORTA: cada COM tem seu próprio mutex (promise chain). Assim um job
+// travado/lento na COM7 NÃO bloqueia a COM8 — cada impressora é isolada.
+const _queues = new Map();
 
 // Envia o buffer para uma porta COM de forma confiável (serializado + chunked).
 function sendToComPort(comName, buffer) {
-  const job = _queue.then(() => _runJob(comName, buffer));
-  // Mantém a cadeia viva mesmo se este job falhar, sem propagar o erro adiante.
-  _queue = job.catch(() => {});
+  const key = String(comName || '').trim().toUpperCase();
+  const prev = _queues.get(key) || Promise.resolve();
+  const job = prev.then(() => _runJob(comName, buffer));
+  // Mantém a cadeia da PORTA viva mesmo se este job falhar, sem propagar o erro.
+  _queues.set(key, job.catch(() => {}));
   return job;
 }
 

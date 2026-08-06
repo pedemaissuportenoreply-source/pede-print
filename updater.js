@@ -9,7 +9,6 @@
 // sobrescrito em runtime por PEDE_UPDATE_URL (provider genérico).
 
 const { app, Notification } = require('electron')
-const { autoUpdater } = require('electron-updater')
 const log = require('electron-log')
 
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000 // 6h
@@ -30,6 +29,7 @@ function initUpdater() {
     return
   }
 
+  const { autoUpdater } = require('electron-updater')
   autoUpdater.logger = log
   log.transports.file.level = 'info'
 
@@ -64,6 +64,8 @@ function initUpdater() {
 // Chamado manualmente pelo tray ("Verificar atualizações").
 function checkForUpdatesNow() {
   if (!app.isPackaged) { notify('Pede+ Print', 'Atualizações só no app instalado.'); return }
+  // require aqui: o módulo só existe/faz sentido no app empacotado (mesmo do init).
+  const { autoUpdater } = require('electron-updater')
   autoUpdater.checkForUpdates().catch((e) => log.warn('[updater] check manual falhou:', e.message))
 }
 

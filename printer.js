@@ -23,6 +23,20 @@ const LOGO_RASTER_ON_COM = process.env.PEDE_LOGO_ALLOW_RASTER === '1'
 // Solução: usar ESC_INIT ([0x1b,0x40]) como reset universal.
 // Não tem byte nulo, repõe: left-align + bold-off + font normal.
 
+// ── Perfil de impressora (bytes ESC/POS específicos do modelo) ────────────────
+// Os bytes de CORTE e CODE PAGE vêm do PERFIL ATIVO (printer-profiles.js), por
+// VID/PID — nunca hardcoded aqui. Default = Epson TM-T20; setActiveProfile()
+// troca em runtime quando o auto-detect identifica o modelo. A config do tenant
+// ainda sobrescreve o code page por impressora (override explícito).
+const { DEFAULT_PROFILE } = require('./printer-profiles')
+
+let _activeProfile = DEFAULT_PROFILE
+// "ESC t n" do perfil: commands.codepage = [0x1B, 0x74, n] -> extrai n.
+const _profileCodepage = (prof) => {
+  const cp = prof && prof.commands && prof.commands.codepage
+  return Array.isArray(cp) && cp.length >= 3 ? cp[2] : 16
+}
+
 const ESC_INIT  = Buffer.from([0x1b, 0x40])          // init / reset universal
 const BOLD_ON   = Buffer.from([0x1b, 0x45, 0x01])    // bold on
 const BIG_ON    = Buffer.from([0x1b, 0x21, 0x30])    // ESC ! 0x30 — double-height + double-width
@@ -31,24 +45,65 @@ const INVERT_ON = Buffer.from([0x1d, 0x42, 0x01])    // GS B 1 — white-on-blac
 const INVERT_OFF= Buffer.from([0x1d, 0x42, 0x00])    // GS B 0 — fim invertido
 const UNDER_ON  = Buffer.from([0x1b, 0x2d, 0x01])    // ESC - 1 — sublinhado on
 const UNDER_OFF = Buffer.from([0x1b, 0x2d, 0x00])    // ESC - 0 — sublinhado off
-const CUT       = Buffer.from([0x1d, 0x56, 0x41, 0x00]) // full cut (null só aqui, último byte)
+// Combos ESC ! com bold embutido (bit 0x08) — para o bloco reverso contínuo da
+// via cozinha, onde ESC_INIT NÃO pode rodar no meio (derrubaria o GS B ligado).
+// GS B é independente de ESC !, então trocar fonte não desliga o reverso.
+const FONT_BOLD      = Buffer.from([0x1b, 0x21, 0x08]) // fonte A + bold
+const FONT_TALL_BOLD = Buffer.from([0x1b, 0x21, 0x18]) // dupla-altura + bold
+const FONT_BIG_BOLD  = Buffer.from([0x1b, 0x21, 0x38]) // dupla-altura+largura + bold
+// Espaçamento de linha = altura do caractere (24 dots): linhas reversas coladas,
+// sem faixa branca entre elas (com dupla-altura o feed mínimo vira a própria
+// altura do char). ESC 2 restaura o default depois do bloco.
+const LINE_SPACING_TIGHT   = Buffer.from([0x1b, 0x33, 24]) // ESC 3 24
+const LINE_SPACING_DEFAULT = Buffer.from([0x1b, 0x32])     // ESC 2
+// Corte do perfil ativo (Epson TM-T20: parcial c/ avanço, GS V 66 0). O 0x00
+// final é o parâmetro n=0 do comando E o único byte nulo do job (último byte).
+// `let` porque setActiveProfile() pode trocá-lo em runtime (auto-detect VID/PID).
+let CUT         = Buffer.from(_activeProfile.commands.cut)
 
-// Daruma DR800: diagnóstico confirmou ESC t 7 + cp1252 (acentos corretos).
-// Estes são os DEFAULTS — a config armazenada (electron-store) sobrescreve por
-// impressora via setPrintParams({ encoding, codepage }). Env ainda funciona como
-// fallback inicial:
+// Code page vem do perfil ativo; encoding do texto continua cp1252 (acentos
+// PT-BR corretos). Estes são os DEFAULTS — a config do tenant (electron-store)
+// sobrescreve por impressora via setPrintParams({ encoding, codepage }). Env
+// ainda funciona como fallback inicial:
 //   PEDE_PRINT_ENCODING (default 'cp1252') — iconv.encode(text, encoding)
-//   PEDE_PRINT_CODEPAGE (default 7)         — ESC t n no início do cupom
-const DEFAULT_ENCODING = (process.env.PEDE_PRINT_ENCODING || 'cp1252').trim()
-const DEFAULT_CODEPAGE = (() => {
+//   PEDE_PRINT_CODEPAGE (default = perfil) — ESC t n no início do cupom
+const _ENV_ENCODING = (process.env.PEDE_PRINT_ENCODING || '').trim() || null
+let DEFAULT_ENCODING = _ENV_ENCODING || _activeProfile.encoding || 'cp1252'
+const _ENV_CODEPAGE = (() => {
   const n = parseInt(process.env.PEDE_PRINT_CODEPAGE, 10)
-  return Number.isInteger(n) && n >= 0 && n <= 255 ? n : 7
+  return Number.isInteger(n) && n >= 0 && n <= 255 ? n : null
 })()
+let DEFAULT_CODEPAGE = _ENV_CODEPAGE != null ? _ENV_CODEPAGE : _profileCodepage(_activeProfile)
+
+// Troca o perfil ativo (auto-detect por VID/PID OU catálogo do backend). Atualiza
+// corte, code page, encoding do texto e colunas default a partir do perfil. Env
+// (PEDE_PRINT_*) e a config do tenant continuam com prioridade sobre o default.
+function setActiveProfile(profile) {
+  if (!profile || !profile.commands || !Array.isArray(profile.commands.cut)) return
+  _activeProfile = profile
+  CUT = Buffer.from(profile.commands.cut)
+  if (_ENV_CODEPAGE == null) DEFAULT_CODEPAGE = _profileCodepage(profile)
+  if (_ENV_ENCODING == null && typeof profile.encoding === 'string' && profile.encoding.trim()) {
+    DEFAULT_ENCODING = profile.encoding.trim()
+  }
+  if (Number.isInteger(profile.columns) && profile.columns > 0) COLS = profile.columns
+  console.log('[printer] perfil ativo:', profile.name || '(sem nome)',
+    '| cut:', [...CUT].map((b) => '0x' + b.toString(16).padStart(2, '0')).join(' '),
+    '| ESC t n:', _profileCodepage(profile), '| encoding:', DEFAULT_ENCODING, '| cols:', COLS)
+}
+
+// GS B (reverso) é suportado por toda a térmica homologada; o flag por perfil
+// (supportsInvert:false) ou o env PEDE_PRINT_NO_INVERT=1 forçam o fallback ASCII
+// (moldura + bold) — nunca sai caixa preta quebrada numa impressora sem suporte.
+function invertSupported() {
+  if (process.env.PEDE_PRINT_NO_INVERT === '1') return false
+  return !_activeProfile || _activeProfile.supportsInvert !== false
+}
 
 // Estado de impressão corrente (mutável por job via setPrintParams).
 let ENCODING   = DEFAULT_ENCODING
 let CODEPAGE_N = DEFAULT_CODEPAGE
-const charset = () => Buffer.from([0x1b, 0x74, CODEPAGE_N]) // ESC t n — code page (acentos da DR800)
+const charset = () => Buffer.from([0x1b, 0x74, CODEPAGE_N]) // ESC t n — code page (Epson WPC1252 = 16)
 
 // Aplica encoding/codepage da config do tenant; valores ausentes voltam ao default.
 function setPrintParams(opts) {
@@ -58,14 +113,17 @@ function setPrintParams(opts) {
   CODEPAGE_N = Number.isInteger(n) && n >= 0 && n <= 255 ? n : DEFAULT_CODEPAGE
 }
 
-// Largura padrão única (80mm = 48 colunas). Todo layout deriva deste valor.
-const COLS = 48
+// Largura padrão (80mm = 48 colunas). Default; setActiveProfile() pode ajustar
+// a partir de profile.columns. Todo layout deriva deste valor.
+let COLS = 48
 
 
-// Mínimo de LF para o papel sair do cutter da DR800 antes do corte.
+// Mínimo de LF para o papel avançar até a guilhotina antes do corte parcial.
 const FEED_CUT = Buffer.from('\n'.repeat(4), 'ascii')
 
-// Texto codificado em CP1252 (não UTF-8) — Daruma DR800 imprime acentos corretos.
+// Texto codificado no ENCODING do perfil ativo (iconv), casado com o ESC t n do
+// mesmo perfil (charset da ROM) — par verificado p/ acentos PT-BR corretos. Ex.:
+// Daruma DR800 = cp860 + ESC t 3 (cp1252 + ESC t 7 mangla; ver printer-profiles.js).
 function ln(text) { return iconv.encode(String(text) + '\n', ENCODING) }
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
@@ -123,20 +181,85 @@ const PM_MAP = {
   fiado: 'FIADO', FIADO: 'FIADO',
 }
 
+// Nome de exibição do item: meio a meio mostra os DOIS sabores + tamanho.
+// "1/2 A + 1/2 B (G)". Usa "1/2" ASCII (o glifo cp1252 0xBD nao e confiavel na DR800).
+function itemDisplayName(item) {
+  const appendWeight = (name) => {
+    const wg = Number(item.weightGrams ?? item.weight_grams ?? 0)
+    const saleType = String(item.saleType ?? item.sale_type ?? '').toUpperCase()
+    if (saleType !== 'WEIGHT' || !Number.isFinite(wg) || wg <= 0 || new RegExp(`${wg}\\s*g`, 'i').test(name)) return name
+    return `${name} (${wg}g)`
+  }
+  if (item.meioAMeio && item.sabor2Nome) {
+    const s1 = item.sabor1Nome || item.name
+    const base = `1/2 ${s1} + 1/2 ${item.sabor2Nome}`
+    return appendWeight(item.variacaoNome ? `${base} (${item.variacaoNome})` : base)
+  }
+  return appendWeight(item.name)
+}
+
+// Agentes pareados ANTES da correção guardaram em config.tenantAddress o endereço
+// INTEIRO ("Rua X, 17 · Bairro · Cidade - UF · CEP"), enquanto bairro/cidade/CEP
+// vêm em campos próprios e ganham linha só deles — o cabeçalho repetia tudo.
+// Aqui a linha de endereço fica só com o que NÃO será reimpresso abaixo.
+function soLogradouro(addr, rawData = {}) {
+  const texto = addr == null ? '' : String(addr).trim()
+  if (!texto) return ''
+  const norm = (v) => String(v ?? '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]/gi, '').toLowerCase()
+  const cidadeUf = [rawData.tenantCity, rawData.tenantState].filter(Boolean).join('-')
+  const redundantes = [rawData.tenantNeighborhood, rawData.tenantCity, rawData.tenantState, cidadeUf, rawData.tenantCep]
+    .map(norm).filter((x) => x.length > 1)
+  const partes = texto.split(/\s*·\s*/).filter((parte) => {
+    const p = norm(parte)
+    if (!p) return false
+    if (/^cep/.test(p)) return false
+    return !redundantes.includes(p)
+  })
+  return partes.join(' · ')
+}
+
 function normalizePayload(data) {
   const rawItems = data.items ?? data.itens ?? []
   const items = rawItems.map((item) => {
     const qty       = item.quantity ?? item.quantidade ?? item.qty ?? 1
     const unitPrice = item.preco    ?? item.unitPrice  ?? item.price ?? null
+    const saleType = item.saleType ?? item.sale_type ?? item.produto?.saleType ?? item.produto?.sale_type ?? null
+    const weightGrams = item.weightGrams ?? item.weight_grams ?? null
+    const pricePerKg = item.pricePerKg ?? item.price_per_kg ?? item.produto?.pricePerKg ?? item.produto?.price_per_kg ?? null
     return {
       qty,
       name:     item.produto?.nome ?? item.name ?? item.nome ?? '(sem nome)',
+      categoria: item.categoria ?? item.categoriaNome ?? item.categoria_nome
+        ?? item.produto?.categoria?.nome ?? item.produto?.categoriaNome ?? null,
       obs:      item.observacao    ?? item.obs   ?? '',
       unitPrice,
       subtotal: item.subtotal ?? (unitPrice != null ? unitPrice * qty : null),
+      saleType,
+      weightGrams,
+      pricePerKg,
+      // Meio a meio (max 2 sabores) — campos do DTO 6A repassados ao builder.
+      brinde:       item.brinde === true,
+      meioAMeio:    item.meioAMeio ?? item.meio_a_meio ?? false,
+      sabor1Nome:   item.sabor1Nome ?? item.sabor1_nome ?? null,
+      sabor2Nome:   item.sabor2Nome ?? item.sabor2_nome ?? null,
+      variacaoNome: item.variacaoNome ?? item.variacao_nome ?? null,
+      // Combo (fase 2): componente já explodido pelo backend; comboNome agrupa a via.
+      comboNome:    item.comboNome ?? item.combo_nome ?? null,
       addons:   (item.adicionais ?? item.addons ?? [])
         .map((a) => (typeof a === 'string' ? a : (a.nome ?? a.name ?? '')))
         .filter(Boolean),
+      // Complementos com preço unitário (payload novo: addonsDetail; pedido cru:
+      // objetos em adicionais). Só exibição — nunca entra no total.
+      addonsDetail: (Array.isArray(item.addonsDetail) ? item.addonsDetail
+        : (item.adicionais ?? item.addons ?? []).filter((a) => a && typeof a === 'object'))
+        .map((a) => ({
+          name:  String(a.nome ?? a.name ?? ''),
+          qty:   Number(a.quantidade ?? a.qty ?? 1) || 1,
+          price: Number(a.preco ?? a.price ?? a.valor ?? 0) || 0,
+        }))
+        .filter((a) => a.name),
     }
   })
 
@@ -161,7 +284,7 @@ function normalizePayload(data) {
     })(),
     table:         data.mesa?.numero?.toString() ?? data.table?.toString() ?? null,
     paraViagem:    data.paraViagem ?? data.para_viagem ?? false,
-    customer:      data.customer_name ?? data.nomeCliente ?? data.cliente?.nome ?? customerStr ?? null,
+    customer:      data.clienteNome ?? data.customer_name ?? data.nomeCliente ?? data.cliente?.nome ?? customerStr ?? null,
     garcom:        data.operator?.name ?? data.user?.name ?? data.garcom ?? null,
     createdAt:     data.created_at ?? data.createdAt ?? new Date().toISOString(),
     paymentMethod: rawPM ? (PM_MAP[rawPM] ?? String(rawPM)) : null,
@@ -177,6 +300,20 @@ function normalizePayload(data) {
     deliveryFee: data.deliveryFee ?? data.taxaEntrega ?? null,
     discount:    data.discount    ?? null,
     total:       data.total       ?? data.valorTotal  ?? null,
+    // Cupom de desconto (valores SEMPRE do servidor; o app só renderiza).
+    cupomCodigo:   data.cupomCodigo   ?? null,
+    descontoCupom: data.descontoCupom ?? null,
+    freteGratis:   data.freteGratis   ?? false,
+    // Fechamento no Caixa (valores do servidor): desconto manual + couvert.
+    desconto:      data.desconto      ?? null,
+    couvert:       data.couvert       ?? null,
+    nrPessoas:     data.nrPessoas     ?? null,
+    // Enriquecimento estilo iFood (delivery) — só renderiza o que existir.
+    cpf:           data.cpf           ?? null,
+    entregador:    data.entregador    ?? data.motoboy?.nome ?? null,
+    previsao:      data.previsaoEntrega ?? data.previsao ?? data.tempoEstimadoEntrega ?? null,
+    itemCount:     data.itemCount     ?? null,
+    printedAt:     data.printedAt     ?? null,
     items,
   }
 }
@@ -214,6 +351,11 @@ function buildReceiptBuffer(rawData, cols) {
     return out.length ? out : ['']
   }
 
+  // Rodapé de assinatura da marca — impresso em TODAS as vias, após o conteúdo
+  // e ANTES do corte. Centralizado (ctr), fonte normal (sem negrito/grande).
+  // ESC_INIT antes garante reset de alinhamento/ênfase herdada do conteúdo.
+  const brandFooter = () => [ESC_INIT, ln(''), ln(ctr('Emitido por Pede+')), ln(ctr('pedeplus.com.br')), ln('')]
+
   const HALF = Math.floor(cols / 2) // colunas úteis em double-width (48/2 = 24)
   const ctrBig = (str) => {
     const s = String(str)
@@ -242,48 +384,195 @@ function buildReceiptBuffer(rawData, cols) {
     destino = String(t).toUpperCase()
   }
 
-  // ── VIA COZINHA — itens apenas, sem precos/entrega/totais ─────────────────────
+  // ── VIA COZINHA ───────────────────────────────────────────────────────────────
+  // Flags do tenant (config Comprovantes → _receiptOpts). Defaults reproduzem o
+  // comportamento histórico: sem preços, com horário/cliente, obs destacada, corte.
   function buildKitchenVia() {
-    console.log('[kitchen] build start | itens:', (data.items ?? []).length)
+    const opts = rawData._receiptOpts || {}
+    const showPrices  = opts.ocultarPrecos === false   // default: oculta (true)
+    const showHora    = opts.exibirHorario !== false
+    const showCliente = opts.exibirClienteMesa !== false
+    const destacaObs  = opts.destacarObservacoes !== false
+    const agrupar     = opts.agruparPorCategoria === true
+    const porSetor    = opts.umaViaPorSetor === true
+    const noCut       = opts.noCut === true
+    const allItems = data.items ?? []
+    console.log('[kitchen] build start | itens:', allItems.length, '| showPrices:', showPrices, '| agrupar:', agrupar, '| porSetor:', porSetor)
     const b = []
     const p = (...x) => b.push(...x)
-    p(ESC_INIT, charset())
-    // Cozinha SEMPRE texto-puro — nunca logo
-    p(BOLD_ON, ...ctrBig(data.tenantName || 'ESTABELECIMENTO'))
-    p(eq())
-    p(BOLD_ON, ...ctrBig('VIA COZINHA'))
-    p(eq())
-    p(INVERT_ON, BOLD_ON, TALL_ON, ln(row(' ' + pedido, destino + ' ', cols)), INVERT_OFF, ESC_INIT)
-    if (data.paraViagem) {
-      // Linha própria, centrada para double-width (ctrBig usa HALF=24 cols e cai
-      // para altura-dupla se não couber), envolta em inverso+bold. Nunca quebra.
-      p(INVERT_ON, BOLD_ON, ...ctrBig('** PARA VIAGEM **'), INVERT_OFF, ESC_INIT)
-    }
-    if (data.customer && !isDelivery) p(ln('Cliente: ' + String(data.customer).slice(0, cols - 9)))
-    const tipoLabel = isDelivery ? 'DELIVERY' : isBalcao ? 'BALCAO' : 'MESA'
-    p(ln(row('Tipo: ' + tipoLabel, 'Hora: ' + time)))
-    p(ln('Data: ' + date))
-    p(eq())
-    // Itens = foco visual: nome em double-height+double-width (BIG_ON), cada item
-    // separado por divisor para destacar. obs/adicionais em tamanho normal.
-    for (const item of data.items ?? []) {
-      const prefix = String(item.qty ?? 1).padStart(2, '0') + 'X '
+
+    // Cabeçalho "COMBO <nome>" impresso 1x por bloco contíguo de componentes do
+    // mesmo combo. Reset por seção (grupo/setor) faz o cabeçalho reaparecer na via
+    // de cada setor — ex.: o refri (BEBIDAS) sai na impressora de bebidas também
+    // sob o cabeçalho do combo.
+    let lastCombo = null
+    const resetCombo = () => { lastCombo = null }
+
+    const renderItem = (item) => {
+      if (item.comboNome && item.comboNome !== lastCombo) {
+        p(BOLD_ON, ln(('COMBO ' + String(item.comboNome)).toUpperCase().slice(0, cols)), ESC_INIT)
+        lastCombo = item.comboNome
+      } else if (!item.comboNome) {
+        lastCombo = null
+      }
+      const comboIndent = item.comboNome ? '  ' : ''
+      // Caixinha p/ a cozinha marcar à caneta quando o item ficar pronto. SÓ no
+      // item principal (normal/meio-a-meio/brinde) — complementos "+" não recebem.
+      // Entra no prefix, então `indent` alinha as continuações sob o nome.
+      const prefix = comboIndent + '[ ] ' + String(item.qty ?? 1).padStart(2, '0') + 'X '
       const indent = ' '.repeat(prefix.length)
-      const lines  = wrap(String(item.name ?? '').toUpperCase(), HALF - prefix.length)
-      p(BOLD_ON, BIG_ON, ln((prefix + lines[0]).slice(0, cols)), ESC_INIT)
-      for (const extra of lines.slice(1)) p(BOLD_ON, BIG_ON, ln((indent + extra).slice(0, cols)), ESC_INIT)
-      if (item.obs) p(BOLD_ON, ln(('   >> ' + item.obs).slice(0, cols)), ESC_INIT)
-      for (const addon of item.addons ?? []) p(ln(('   + ' + addon).slice(0, cols)))
-      p(ln('-'.repeat(cols)))
+      // BRINDE (cupom PRODUTO_GRATIS): marcação forte antes do produto (ASCII-safe).
+      // Barra reversa borda a borda (mesmo pad full-width do bloco PEDIDO/MESA) +
+      // item emoldurado ('+---+' / '|') pra destacar na cozinha.
+      const framed = item.brinde === true
+      const raw = (s) => iconv.encode(String(s), ENCODING) // trecho de linha, sem \n
+      // fonts = buffers de estilo do miolo; bigWidth = miolo em dupla-largura.
+      // Bordas '|' sempre em fonte normal; a soma dá `cols` colunas exatas.
+      const emitLine = (fonts, text, bigWidth) => {
+        if (!framed) {
+          p(...fonts, ln(String(text).slice(0, cols)), ...(fonts.includes(INVERT_ON) ? [INVERT_OFF] : []), ESC_INIT)
+          return
+        }
+        const w = bigWidth ? Math.floor((cols - 2) / 2) : cols - 2
+        const t = String(text).slice(0, w)
+        p(FONT_BOLD, raw('|'), ...fonts, raw(t + ' '.repeat(w - t.length)), INVERT_OFF, FONT_BOLD, ln('|'), ESC_INIT)
+      }
+      if (framed) {
+        const s = '*** BRINDE ***'
+        if (invertSupported()) {
+          const left = Math.floor((cols - s.length) / 2)
+          p(INVERT_ON, FONT_BOLD, ln(' '.repeat(left) + s + ' '.repeat(Math.max(0, cols - left - s.length))), INVERT_OFF, ESC_INIT)
+        } else {
+          p(BOLD_ON, ln(ctr(s)), ESC_INIT)
+        }
+        p(ln('+' + '-'.repeat(cols - 2) + '+'))
+      }
+      if (item.meioAMeio && item.sabor2Nome) {
+        const tam = item.variacaoNome ? ` (${item.variacaoNome})` : ''
+        const head = wrap(('MEIO A MEIO' + tam).toUpperCase(), HALF - prefix.length)
+        emitLine([BOLD_ON, BIG_ON], prefix + head[0], true)
+        for (const extra of head.slice(1)) emitLine([BOLD_ON, BIG_ON], indent + extra, true)
+        const sabor = (n) => {
+          const sl = wrap(('1/2 ' + n).toUpperCase(), cols - 3)
+          emitLine([BOLD_ON, TALL_ON], '   ' + sl[0], false)
+          for (const extra of sl.slice(1)) emitLine([BOLD_ON, TALL_ON], '       ' + extra, false)
+        }
+        sabor(item.sabor1Nome || item.name)
+        sabor(item.sabor2Nome)
+      } else {
+        const lines = wrap(String(itemDisplayName(item) ?? '').toUpperCase(), HALF - prefix.length)
+        emitLine([BOLD_ON, BIG_ON], prefix + lines[0], true)
+        for (const extra of lines.slice(1)) emitLine([BOLD_ON, BIG_ON], indent + extra, true)
+      }
+      // Preço por item (apenas quando "ocultar preços" está DESLIGADO).
+      if (showPrices && item.subtotal != null) {
+        const unit = item.unitPrice != null ? item.unitPrice : (item.qty ? item.subtotal / item.qty : item.subtotal)
+        emitLine([], row('   ' + fmtBRL(unit) + ' un', fmtBRL(item.subtotal), framed ? cols - 2 : cols), false)
+      }
+      if (item.obs) {
+        if (destacaObs) emitLine([INVERT_ON, BOLD_ON], '   >> ' + item.obs, false)
+        else emitLine([], '   >> ' + item.obs, false)
+      }
+      for (const addon of item.addons ?? []) emitLine([], comboIndent + '   + ' + addon, false)
+      if (framed) p(ln('+' + '-'.repeat(cols - 2) + '+'))
+      else p(ln('-'.repeat(cols)))
     }
-    p(BOLD_ON, ln(ctr('*** CONFIRA OS ITENS ***')), ESC_INIT)
-    p(FEED_CUT, CUT)
+
+    const header = () => {
+      p(ESC_INIT, charset())
+      p(BOLD_ON, ...ctrBig(data.tenantName || 'ESTABELECIMENTO'))
+      p(eq())
+      p(BOLD_ON, ...ctrBig('VIA COZINHA'))
+      p(eq())
+      // Bloco do pedido: UM retângulo preto contínuo. GS B liga UMA vez, cada
+      // linha é padded até a largura total (borda a borda), o \n sai com o
+      // reverso ainda ligado e ESC 3 24 elimina a faixa branca entre linhas.
+      // Respiro = linha só de espaços (invertida) no topo e na base.
+      const padFull = (s, w) => { const t = String(s).slice(0, w); return t + ' '.repeat(Math.max(0, w - t.length)) }
+      const destaque = data.paraViagem ? '** PARA VIAGEM **' : null
+      if (invertSupported()) {
+        p(LINE_SPACING_TIGHT, INVERT_ON)
+        p(FONT_BOLD, ln(' '.repeat(cols)))
+        p(FONT_TALL_BOLD, ln(padFull(row(' ' + pedido, destino + ' ', cols), cols)))
+        if (destaque) {
+          // Dupla-largura: cada char ocupa 2 colunas → pad dos DOIS lados até HALF.
+          const s = destaque.slice(0, HALF)
+          const left = Math.floor((HALF - s.length) / 2)
+          p(FONT_BIG_BOLD, ln(' '.repeat(left) + s + ' '.repeat(Math.max(0, HALF - left - s.length))))
+        }
+        p(FONT_BOLD, ln(' '.repeat(cols)))
+        p(INVERT_OFF, LINE_SPACING_DEFAULT, ESC_INIT)
+      } else {
+        // Fallback sem GS B (supportsInvert:false / PEDE_PRINT_NO_INVERT=1):
+        // moldura "===" + bold, padrão já usado nas vias sem reverso.
+        p(eq())
+        p(BOLD_ON, TALL_ON, ln(row(' ' + pedido, destino + ' ', cols)), ESC_INIT)
+        if (destaque) p(BOLD_ON, ...ctrBig(destaque), ESC_INIT)
+        p(eq())
+      }
+      if (data.customer && !isDelivery && showCliente) p(ln('Cliente: ' + String(data.customer).slice(0, cols - 9)))
+      const tipoLabel = isDelivery ? 'DELIVERY' : isBalcao ? 'BALCAO' : 'MESA'
+      if (showHora) {
+        p(ln(row('Tipo: ' + tipoLabel, 'Hora: ' + time)))
+        p(ln('Data: ' + date))
+      } else {
+        p(ln('Tipo: ' + tipoLabel))
+      }
+      p(eq())
+    }
+
+    const footer = () => {
+      if (showPrices) {
+        const tot = data.total != null
+          ? data.total
+          : allItems.reduce((s, i) => s + (Number(i.subtotal) || 0), 0)
+        p(eq())
+        p(BOLD_ON, TALL_ON, ln(row('TOTAL:', fmtBRL(tot), cols)), ESC_INIT)
+      }
+      p(BOLD_ON, ln(ctr('*** CONFIRA OS ITENS ***')), ESC_INIT)
+      p(...brandFooter())
+      if (noCut) p(FEED_CUT)
+      else p(FEED_CUT, CUT)
+    }
+
+    // Agrupa por categoria/setor quando habilitado e houver dado de categoria.
+    const groups = new Map()
+    if (agrupar || porSetor) {
+      for (const it of allItems) {
+        const key = (it.categoria || 'OUTROS').toString().toUpperCase()
+        if (!groups.has(key)) groups.set(key, [])
+        groups.get(key).push(it)
+      }
+    }
+    const hasCategorias = groups.size > 1 || (groups.size === 1 && ![...groups.keys()].includes('OUTROS'))
+
+    if ((porSetor || agrupar) && hasCategorias) {
+      // UMA comanda única: cabeçalho/corte uma vez, setores como subseções.
+      header()
+      let first = true
+      for (const [cat, items] of groups) {
+        const label = porSetor ? 'SETOR: ' + cat : '— ' + cat + ' —'
+        if (porSetor && !first) p(ln('-'.repeat(cols)))
+        p(BOLD_ON, ln(ctr(label)), ESC_INIT)
+        p(ln('-'.repeat(cols)))
+        resetCombo()
+        for (const it of items) renderItem(it)
+        first = false
+      }
+      footer()
+    } else {
+      header()
+      resetCombo()
+      for (const item of allItems) renderItem(item)
+      footer()
+    }
     console.log('[kitchen] build end | segmentos:', b.length)
     return b
   }
 
   // ── VIA CLIENTE (DELIVERY) — ênfase nativa DR800 (bold/dupla-altura/sublinhado) ─
   function buildClientVia() {
+    console.log('[CLIENTE-DEBUG] buildClientVia | deliveryCode:', rawData.delivery_code ?? rawData.deliveryCode ?? '(sem)', '| deliveryAddress obj:', typeof rawData.deliveryAddress === 'object' && !!rawData.deliveryAddress, '| street:', da.street ?? '(sem)', '| bairro:', da.neighborhood ?? da.district ?? '(sem)', '| subtotal:', data.subtotal, '| total:', data.total, '| itens c/ subtotal:', (data.items ?? []).filter((i) => i.subtotal != null).length + '/' + (data.items ?? []).length, '| needsChange:', rawData.needsChange, '| trocoPara:', rawData.trocoPara ?? rawData.changeFor ?? '(sem)')
     const b = []
     const p = (...x) => b.push(...x)
     const divD   = () => p(eq())                       // divisor duplo ===
@@ -301,7 +590,7 @@ function buildReceiptBuffer(rawData, cols) {
     // 1) ESTABELECIMENTO (topo, centrado)
     if (data.tenantName) p(BOLD_ON, ln(ctr(String(data.tenantName))), ESC_INIT)
     const tEnd = [
-      [data.tenantAddress, rawData.tenantNumber].filter((x) => x != null && x !== '').join(', '),
+      [soLogradouro(data.tenantAddress, rawData), rawData.tenantNumber].filter((x) => x != null && x !== '').join(', '),
       rawData.tenantNeighborhood,
     ].filter((x) => x != null && x !== '').join(' - ')
     if (tEnd) p(ln(ctr(tEnd)))
@@ -312,7 +601,14 @@ function buildReceiptBuffer(rawData, cols) {
 
     // 2) PEDIDO + ENTREGA (emoldurados, dupla-altura + bold)
     framedTB('PEDIDO #' + (data.orderCode || '?'))
-    if (rawData.delivery_code) framedTB('ENTREGA ' + String(rawData.delivery_code).toUpperCase())
+    // TIPO + DATA/HORA do pedido (condicional, null-safe)
+    if (data.serviceType) p(ln(ctr(String(data.serviceType))))
+    if (date) p(ln(ctr(date + (time ? ' - ' + time : ''))))
+    // Código de entrega — aceita snake_case (pedido cru via emitOrder) e camelCase
+    // (contentJson do recibo). É EXATAMENTE o valor que o app do motoboy consulta
+    // em "Iniciar percurso" (DLV-XXXXXX); os 6 dígitos saem destacados no rodapé.
+    const deliveryCodeRaw = rawData.delivery_code ?? rawData.deliveryCode ?? null
+    if (deliveryCodeRaw) framedTB('ENTREGA ' + String(deliveryCodeRaw).toUpperCase())
 
     // 3) CLIENTE
     lblB('CLIENTE')
@@ -320,38 +616,48 @@ function buildReceiptBuffer(rawData, cols) {
     if (cliente) p(ln(String(cliente)))
     const fone = fmtPhone(rawData.customer_phone ?? data.phone)
     if (fone) p(ln('Tel: ' + fone))
+    if (data.cpf) p(ln('CPF: ' + String(data.cpf)))
     divS()
 
-    // 4) ENDERECO DE ENTREGA (header bold + sublinhado)
-    lblBU('ENDERECO DE ENTREGA')
-    const street = da.street ?? da.logradouro
-    const number = da.number ?? da.numero
-    const endereco = [street, number].filter((x) => x != null && x !== '').join(', ')
-    if (endereco) {
-      const lines = wrap(endereco, cols)
-      p(ln(lines[0]))
-      for (const extra of lines.slice(1)) p(ln(('  ' + extra).slice(0, cols)))
+    // 4) ENDERECO DE ENTREGA (header bold + sublinhado) — ocultável pela config.
+    if (rawData._receiptOpts?.exibirEnderecoEntrega !== false) {
+      lblBU('ENDERECO DE ENTREGA')
+      const street = da.street ?? da.logradouro
+      const number = da.number ?? da.numero
+      const endereco = [street, number].filter((x) => x != null && x !== '').join(', ')
+      if (endereco) {
+        const lines = wrap(endereco, cols)
+        p(ln(lines[0]))
+        for (const extra of lines.slice(1)) p(ln(('  ' + extra).slice(0, cols)))
+      }
+      if (da.neighborhood ?? da.district) p(ln('Bairro: ' + (da.neighborhood ?? da.district)))
+      if (da.city)         p(ln('Cidade: ' + da.city))
+      // contentJson do recibo pode vir com prefixo ("Complemento: X") — remove
+      // p/ nao imprimir "Compl: Complemento: X".
+      const daCompl = da.complement ? String(da.complement).replace(/^complemento:\s*/i, '') : null
+      const daRef   = da.reference  ? String(da.reference).replace(/^(referencia|referência):\s*/i, '') : null
+      if (daCompl) p(ln('Compl: ' + daCompl))
+      if (daRef)   lblB('Ref: ' + daRef) // referencia destacada
+      divS()
     }
-    if (da.neighborhood) p(ln('Bairro: ' + da.neighborhood))
-    if (da.city)         p(ln('Cidade: ' + da.city))
-    if (da.complement)   p(ln('Compl: ' + da.complement))
-    if (da.reference)    lblB('Ref: ' + da.reference) // referencia destacada
-    divS()
 
     // 5) ITENS — tabela: QTD | DESCRICAO | UNIT | TOTAL (igual ao comprovante caixa)
-    lblB('ITENS')
+    const dlvCount = data.itemCount ?? (data.items ?? []).reduce((s, it) => s + Number(it.qty ?? 1), 0)
+    lblB('ITENS' + (dlvCount ? ` (${dlvCount} ${dlvCount === 1 ? 'item' : 'itens'})` : ''))
     const dlvRows = (data.items ?? []).map((item) => {
       const qtyN  = Number(item.qty ?? 1)
       const unitV = item.unitPrice != null
         ? item.unitPrice
         : (item.subtotal != null && qtyN ? item.subtotal / qtyN : null)
+      const isBrinde = item.brinde === true
       return {
         qty:    String(item.qty ?? 1) + 'x',
-        name:   String(item.name ?? '').toUpperCase(),
-        unit:   unitV != null ? fmtBRL(unitV) : '',
-        total:  item.subtotal != null ? fmtBRL(item.subtotal) : '',
+        name:   (isBrinde ? 'BRINDE - ' : '') + String(itemDisplayName(item) ?? '').toUpperCase(),
+        unit:   isBrinde ? fmtBRL(0) : (unitV != null ? fmtBRL(unitV) : ''),
+        total:  isBrinde ? fmtBRL(0) : (item.subtotal != null ? fmtBRL(item.subtotal) : ''),
         obs:    item.obs,
         addons: item.addons ?? [],
+        addonsDetail: item.addonsDetail ?? [],
       }
     })
     const dlvQtyW   = Math.max(3, ...dlvRows.map((r) => r.qty.length))
@@ -370,7 +676,16 @@ function buildReceiptBuffer(rawData, cols) {
         p(ln(row('', dlvNumCell(it.unit, it.total), cols)))
       }
       if (it.obs) p(ln(('   >> ' + it.obs).slice(0, cols)))
-      for (const addon of it.addons) p(ln(('   + ' + addon).slice(0, cols)))
+      // Complementos: com preço unitário > 0 sai o valor alinhado na coluna TOTAL
+      // ("+R$ 2,00"); grátis mantém só "+ 1x Nome". Rastreabilidade — o total do
+      // pedido já contempla o adicional (preço embutido no unitPrice do item).
+      const dlvDetail = it.addonsDetail.length === it.addons.length ? it.addonsDetail : null
+      it.addons.forEach((addon, i) => {
+        const det = dlvDetail?.[i]
+        const label = ('   + ' + addon)
+        if (det && det.price > 0) p(ln(row(label, dlvNumCell('', '+' + fmtBRL(det.price)), cols)))
+        else p(ln(label.slice(0, cols)))
+      })
     }
     divS()
 
@@ -385,158 +700,348 @@ function buildReceiptBuffer(rawData, cols) {
     const displayedTotal = (payloadTotal != null && Math.abs(Number(payloadTotal) - sumWithFee) < 0.005)
       ? Number(payloadTotal)
       : sumWithFee
-    console.log('[delivery total] items:', itemsTotal, '| fee:', fee, '| payloadTotal:', payloadTotal, '| displayed:', displayedTotal)
+    // Cupom de desconto (estilo iFood). Valores do servidor; sem cupom = layout atual.
+    const dlvDescTotal = Number(rawData.descontoCupom ?? data.descontoCupom ?? 0)
+    const dlvCupomCod = (rawData.cupomCodigo ?? data.cupomCodigo) ? String(rawData.cupomCodigo ?? data.cupomCodigo).slice(0, 14) : null
+    const dlvFreteGratis = !!(rawData.freteGratis ?? data.freteGratis)
+    const dlvDescSub = dlvFreteGratis ? 0 : dlvDescTotal
+    const dlvCupomTag = dlvCupomCod ? ` (${dlvCupomCod})` : ''
+    // itemsTotal é o subtotal CHEIO; o desconto incide sobre ele (antes do frete).
+    const dlvTotalLiquido = displayedTotal - dlvDescSub
+    console.log('[delivery total] items:', itemsTotal, '| fee:', fee, '| payloadTotal:', payloadTotal, '| desconto:', dlvDescTotal, '| displayed:', dlvTotalLiquido)
     p(ln(row('Subtotal:', fmtBRL(itemsTotal))))
-    if (fee) p(ln(row('Taxa entrega:', fmtBRL(fee))))
-    framedRowTB('TOTAL:', fmtBRL(displayedTotal))
+    if (dlvDescSub > 0) p(ln(row('Desconto' + dlvCupomTag + ':', '-' + fmtBRL(dlvDescSub))))
+    if (dlvFreteGratis && dlvDescTotal > 0) p(ln(row('Taxa entrega:', 'GRATIS' + dlvCupomTag)))
+    else if (fee) p(ln(row('Taxa entrega:', fmtBRL(fee))))
+    const dlvServ = rawData.taxaServico ?? data.taxaServico
+    const dlvServPct = rawData.taxaServicoPercent ?? data.taxaServicoPercent
+    const dlvHasServ = dlvServ != null && Number(dlvServ) > 0
+    if (dlvHasServ) {
+      const lbl = 'Taxa de servico' + (dlvServPct ? ` (${dlvServPct}%)` : '') + ':'
+      p(ln(row(lbl, fmtBRL(dlvServ))))
+    }
+    if (dlvHasServ) framedRowTB('TOTAL C/ SERVICO:', fmtBRL(dlvTotalLiquido + Number(dlvServ)))
+    else framedRowTB('TOTAL:', fmtBRL(dlvTotalLiquido))
+    if (dlvDescTotal > 0) p(ln(ctr('Voce economizou ' + fmtBRL(dlvDescTotal) + dlvCupomTag)))
 
-    // 7) PAGAMENTO — alta visibilidade
+    // 7) PAGAMENTO — bloco EMOLDURADO (separador "===" full-width, texto centrado
+    // em bold, separador "==="). Sem reverso (GS B): o fundo preto borra e gasta
+    // ribbon/térmica em papel barato. ASCII-safe nas duas codificações. Lógica de
+    // pagamento intacta; status em dupla-altura p/ saltar.
     const ps = String(rawData.paymentStatus ?? data.paymentStatus ?? '').toUpperCase()
     const isPaid = /PAGO|PAID|APROVAD|CONFIRMAD/.test(ps)
-    framedTB(isPaid ? '** PAGO **' : '** A PAGAR NA ENTREGA **')
+    const statusTxt = isPaid ? 'PAGO' : 'A PAGAR NA ENTREGA'
     const pg = rawData.formaPagamento ?? data.paymentMethod
-    if (pg) lblB('Forma: ' + String(pg).toUpperCase())
+    const formaTxt = pg ? 'FORMA: ' + String(pg).toUpperCase() : null
     const isCash = /DINHEIRO|CASH|ESPECIE/.test(String(pg ?? '').toUpperCase())
-    if (rawData.needsChange) {
-      const troco = Number(rawData.trocoPara ?? rawData.changeFor ?? 0)
-      p(ln('Troco para: ' + fmtBRL(troco)))
-      framedRowTB('LEVAR TROCO:', fmtBRL(troco - displayedTotal))
-    } else if (isCash) {
-      lblB('NAO PRECISA TROCO')
+    const needsChange = !!rawData.needsChange
+    const trocoPara = Number(rawData.trocoPara ?? rawData.changeFor ?? 0)
+    // Linha de troco só faz sentido em DINHEIRO.
+    const trocoTxt = isCash ? (needsChange ? 'TROCO PARA ' + fmtBRL(trocoPara) : 'NAO PRECISA TROCO') : null
+
+    blank()
+    p(eq())
+    p(BOLD_ON, TALL_ON, ln(ctr(statusTxt)), ESC_INIT)
+    if (formaTxt) p(BOLD_ON, ln(ctr(formaTxt)), ESC_INIT)
+    if (trocoTxt) p(BOLD_ON, ln(ctr(trocoTxt)), ESC_INIT)
+    p(eq())
+    blank()
+
+    // TROCO A LEVAR (valor que o entregador devolve) — mantido abaixo do bloco.
+    if (isCash && needsChange) {
+      const totalFinalDlv = dlvHasServ ? dlvTotalLiquido + Number(dlvServ) : dlvTotalLiquido
+      framedRowTB('TROCO A LEVAR:', fmtBRL(Math.max(0, trocoPara - totalFinalDlv)))
+    }
+
+    // Entregador + Previsao de entrega (condicionais)
+    if (data.entregador || data.previsao) {
+      divS()
+      if (data.entregador) p(ln('Entregador: ' + String(data.entregador)))
+      if (data.previsao)   p(ln('Previsao: ' + String(data.previsao)))
+    }
+
+    // CODIGO DA ENTREGA — destaque no fim do slip p/ o balcao destacar e informar
+    // ao entregador, que digita os 6 digitos em "Iniciar percurso" no app. So na
+    // via cliente do delivery; double-width (ctrBig) p/ leitura facil. ASCII puro.
+    // Emoldurado com "===" (sem reverso GS B).
+    if (deliveryCodeRaw) {
+      const codeDigits = String(deliveryCodeRaw).replace(/\D/g, '')
+      const codeShown = (codeDigits.length >= 4 ? codeDigits : String(deliveryCodeRaw).toUpperCase()).split('').join(' ')
+      blank()
+      p(eq())
+      p(BOLD_ON, ln(ctr('CODIGO DA ENTREGA')), ESC_INIT)
+      p(...ctrBig(codeShown))   // número em destaque: dupla largura+altura, centrado
+      p(BOLD_ON, ln(ctr('Informe ao entregador')), ESC_INIT)
+      p(eq())
+      blank()
     }
     divD()
 
     // 8) RODAPE (centrado) — via cliente é SOMENTE texto: sem QR, sem raster.
     // A URL pública de acompanhamento (reviewUrl) segue no payload p/ outros
     // canais (ex.: WhatsApp), mas não é impressa.
+    const footerMsgC = rawData.footerMessage ?? data.footerMessage
+    if (footerMsgC) for (const fl of wrap(String(footerMsgC), cols)) p(ln(ctr(fl)))
     p(ln(ctr('Obrigado pela preferencia!')))
-    p(FEED_CUT, CUT)
+    const impressoEm = fmtDate(data.printedAt ?? new Date().toISOString())
+    if (impressoEm) p(ln(ctr('Impresso ' + impressoEm)))
+    p(...brandFooter())
+    if (rawData._receiptOpts?.noCut === true) p(FEED_CUT)
+    else p(FEED_CUT, CUT)
     return b
   }
 
   // ── COMPROVANTE DE PAGAMENTO (receipt:print / type payment) ───────────────────
-  function buildPaymentVia() {
+  function buildPaymentVia(preconta = false) {
     const b = []
     const p = (...x) => b.push(...x)
+    const blank = () => p(ln(''))
+    // WhatsApp formatado "DD NNNNN-NNNN" (sem parenteses, sem lixo no fim).
+    const fmtWpp = (v) => {
+      let d = String(v ?? '').replace(/\D/g, '')
+      if ((d.length === 12 || d.length === 13) && d.startsWith('55')) d = d.slice(2)
+      if (d.length === 11) return `${d.slice(0, 2)} ${d.slice(2, 7)}-${d.slice(7)}`
+      if (d.length === 10) return `${d.slice(0, 2)} ${d.slice(2, 6)}-${d.slice(6)}`
+      return String(v ?? '').trim()
+    }
     p(ESC_INIT, charset())
     if (logoBuf) p(logoBuf)
 
-    // Header
-    p(BOLD_ON, ln(ctr(rawData.tenantName ?? data.tenantName ?? 'ESTABELECIMENTO')), ESC_INIT)
-    const endLinha = [rawData.tenantAddress ?? data.tenantAddress, rawData.tenantNumber]
-      .filter((x) => x != null && x !== '').join(', ')
-    if (endLinha) p(ln(ctr(endLinha)))
-    const bairroCidade = [
-      rawData.tenantNeighborhood,
-      [rawData.tenantCity, rawData.tenantState].filter((x) => x != null && x !== '').join('/'),
-    ].filter((x) => x != null && x !== '').join(' - ')
-    if (bairroCidade) p(ln(ctr(bairroCidade)))
-    if (rawData.tenantCep)   p(ln(ctr('CEP: ' + rawData.tenantCep)))
-    const wpp = rawData.tenantPhone ?? data.tenantPhone
-    if (wpp)                 p(ln(ctr('WhatsApp: ' + wpp)))
-    const cnpj = rawData.tenantCnpj ?? data.tenantCnpj
-    if (cnpj)                p(ln(ctr('CNPJ: ' + cnpj)))
-    p(eq())
+    // Header — nome em bold + dupla-altura, centrado; respiro antes do endereco.
+    // Bloco de cabeçalho (endereço/contato) pode ser ocultado pela config do tenant.
+    p(BOLD_ON, TALL_ON, ln(ctr(rawData.tenantName ?? data.tenantName ?? 'ESTABELECIMENTO')), ESC_INIT)
+    blank()
+    if (rawData._receiptOpts?.exibirCabecalho !== false) {
+      const endLinha = [soLogradouro(rawData.tenantAddress ?? data.tenantAddress, rawData), rawData.tenantNumber]
+        .filter((x) => x != null && x !== '').join(', ')
+      if (endLinha) p(ln(ctr(endLinha)))
+      const bairroCidade = [
+        rawData.tenantNeighborhood,
+        [rawData.tenantCity, rawData.tenantState].filter((x) => x != null && x !== '').join('/'),
+      ].filter((x) => x != null && x !== '').join(' - ')
+      if (bairroCidade) p(ln(ctr(bairroCidade)))
+      if (rawData.tenantCep)   p(ln(ctr('CEP: ' + rawData.tenantCep)))
+      const wpp = rawData.tenantPhone ?? data.tenantPhone
+      if (wpp)                 p(ln(ctr('WhatsApp: ' + fmtWpp(wpp))))
+      const cnpj = rawData.tenantCnpj ?? data.tenantCnpj
+      if (cnpj)                p(ln(ctr('CNPJ: ' + cnpj)))
+    }
 
-    // Título
-    p(BOLD_ON, ln(ctr('COMPROVANTE DE PAGAMENTO')), ESC_INIT)
-    const tituloPedido = [data.serviceType, data.table].filter((x) => x != null && x !== '').join(' ')
+    // Banner COMPROVANTE + MESA — emoldurado por "===" com respiro antes/depois.
+    blank()
+    p(eq())
+    p(BOLD_ON, ln(ctr(preconta ? 'PRE-CONTA' : 'COMPROVANTE DE PAGAMENTO')), ESC_INIT)
+    // MESA limpa: "MESA 1 - #6177" (remove prefixo "Mesa/MESA" duplicado do valor).
+    const tableClean = String(data.table ?? '').replace(/^\s*mesa\s*/i, '').trim()
+    const tituloPedido = [data.serviceType, tableClean].filter((x) => x != null && x !== '').join(' ')
       + ' - #' + (data.orderCode || '?')
     p(ln(ctr(tituloPedido.trim())))
-    p(ln('-'.repeat(cols)))
+    p(eq())
+    if (preconta) p(BOLD_ON, ln(ctr('*** NAO E DOCUMENTO FISCAL ***')), ESC_INIT)
+    blank()
 
-    // Info
-    if (data.customer)        p(ln('Cliente: ' + String(data.customer)))
+    // Info — labels alinhados em coluna; dois grupos separados por linha em branco.
+    const infoW = 14
+    const info = (label, value) => p(ln((label + ':').padEnd(infoW) + String(value)))
+    if (data.customer)        info('Cliente', data.customer)
+    const cpfNota = rawData.cpf ?? data.cpf
+    if (cpfNota)              info('CPF', cpfNota)
     const origin = rawData.origin ?? rawData.canalOrigem
-    if (origin)               p(ln('Atendido por: ' + fmtOrigin(origin)))
+    if (origin)               info('Atendido por', fmtOrigin(origin))
     const operator = data.garcom ?? rawData.operator?.name ?? rawData.operator
-    if (operator)             p(ln('Recebido por: ' + (typeof operator === 'object' ? (operator.name ?? '') : operator)))
+    if (operator)             info('Recebido por', (typeof operator === 'object' ? (operator.name ?? '') : operator))
+    blank()
     const openedAt = rawData.openedAt ?? rawData.abertoEm ?? data.createdAt
-    if (openedAt)             p(ln('Aberto: ' + fmtDate(openedAt)))
+    if (openedAt)             info('Aberto', fmtDate(openedAt))
+    // Pré-conta: timestamp de emissão já formatado no fuso America/Fortaleza.
+    const emitidoEm = rawData.emitidoEm ?? data.emitidoEm
+    if (preconta && emitidoEm) info('Emitido', emitidoEm)
     const paidAt = rawData.paidAt ?? rawData.pagoEm
-    if (paidAt)               p(ln('Pago:   ' + fmtDate(paidAt)))
+    if (!preconta && paidAt)  info('Pago', fmtDate(paidAt))
     const duracao = rawData.durationText ?? rawData.duracao
-    if (duracao)              p(ln('Duracao: ' + duracao))
+    if (duracao)              info('Duracao', duracao)
     p(ln('-'.repeat(cols)))
 
     // Itens — tabela: QTD | DESCRICAO | UNIT | TOTAL (total = qty x unit)
-    const itemRows = (data.items ?? []).map((item) => {
-      const qtyN  = Number(item.qty ?? 1)
-      const unitV = item.unitPrice != null
-        ? item.unitPrice
-        : (item.subtotal != null && qtyN ? item.subtotal / qtyN : null)
+    // PESO: QTD = "0,452 kg" e UNIT = preco/kg.  MEIO A MEIO: cabecalho + sabores.
+    // Tudo null-safe; um item malformado NUNCA derruba a via inteira (so e logado).
+    const fmtKg = (g) => (Number(g) / 1000).toFixed(3).replace('.', ',') + ' kg'
+    const buildItemRow = (item) => {
+      const qtyN = Number(item.qty ?? 1) || 1
+      // Item por PESO: UNIT = preco por unidade real (kg), nunca o total da linha.
+      const isWeight = String(item.saleType ?? '').toUpperCase() === 'WEIGHT' && Number(item.weightGrams) > 0
+      let unitV
+      if (isWeight) {
+        const wgKg = Number(item.weightGrams) / 1000
+        unitV = item.pricePerKg != null
+          ? item.pricePerKg
+          : (item.subtotal != null && wgKg ? item.subtotal / wgKg : null)
+      } else {
+        unitV = item.unitPrice != null
+          ? item.unitPrice
+          : (item.subtotal != null && qtyN ? item.subtotal / qtyN : null)
+      }
+      const isMeio = !!(item.meioAMeio && item.sabor2Nome)
+      const name = isMeio
+        ? ('MEIO A MEIO' + (item.variacaoNome ? ` (${item.variacaoNome})` : ''))
+        : String(itemDisplayName(item) ?? '(sem nome)')
+      // UNIT = preco BASE do produto: o unitPrice do payload ja embute os
+      // adicionais (item.price = base + soma dos complementos), entao subtrai a
+      // soma por unidade. TOTAL da linha permanece o subtotal (base + adicionais) x qty.
+      const addonsDetail = Array.isArray(item.addonsDetail) ? item.addonsDetail : []
+      const addonsPerUnit = addonsDetail.reduce((s, a) => s + (Number(a.price) || 0) * (Number(a.qty) || 1), 0)
+      let baseUnit = unitV
+      if (!isWeight && unitV != null && addonsPerUnit > 0) {
+        const b = Math.round((unitV - addonsPerUnit) * 100) / 100
+        if (b >= 0) baseUnit = b
+      }
       return {
-        qty:    String(item.qty ?? 1) + 'x',
-        name:   String(item.name ?? ''),
-        unit:   unitV != null ? fmtBRL(unitV) : '',
+        // Peso nao usa "Nx"; mostra a massa medida com virgula decimal.
+        qty:    isWeight ? fmtKg(item.weightGrams) : (String(item.qty ?? 1) + 'x'),
+        name,
+        unit:   baseUnit != null ? fmtBRL(baseUnit) : '',
         total:  item.subtotal != null ? fmtBRL(item.subtotal) : '',
         obs:    item.obs,
-        addons: item.addons ?? [],
+        addons: Array.isArray(item.addons) ? item.addons : [],
+        addonsDetail,
+        // Sabores do meio a meio: linhas indentadas SEM preco abaixo do cabecalho.
+        sabores: isMeio ? ['1/2 ' + (item.sabor1Nome || item.name || '?'), '1/2 ' + item.sabor2Nome] : null,
+      }
+    }
+    const itemRows = (data.items ?? []).map((item) => {
+      try { return buildItemRow(item) }
+      catch (e) {
+        console.error('[BUILD ITEM FAIL]', JSON.stringify(item), e.message, e.stack)
+        return { qty: String(item?.qty ?? 1) + 'x', name: String(item?.name ?? '(item)'), unit: '', total: '', obs: null, addons: [], addonsDetail: [], sabores: null }
       }
     })
     const qtyW    = Math.max(3, ...itemRows.map((r) => r.qty.length))
     const unitW   = Math.max(4, ...itemRows.map((r) => r.unit.length))
     const totalW  = Math.max(5, ...itemRows.map((r) => r.total.length))
     const descW   = cols - qtyW - unitW - totalW - 3
-    const numCell = (u, t) => u.padStart(unitW) + ' ' + t.padStart(totalW)
+    const numCell = (u, t) => String(u).padStart(unitW) + ' ' + String(t).padStart(totalW)
 
     // Cabecalho de colunas
     p(BOLD_ON, ln(row('QTD'.padEnd(qtyW) + ' DESCRICAO', numCell('UNIT', 'TOTAL'), cols)), ESC_INIT)
 
     for (const it of itemRows) {
-      if (it.name.length <= descW && descW >= 6) {
-        // cabe em uma linha
-        p(ln(row(it.qty.padEnd(qtyW) + ' ' + it.name, numCell(it.unit, it.total), cols)))
-      } else {
-        // descricao longa: qty+nome quebram; unit/total na linha seguinte a direita
-        const lines = wrap(it.name, cols - qtyW - 1)
-        p(ln(it.qty.padEnd(qtyW) + ' ' + lines[0]))
-        for (const extra of lines.slice(1)) p(ln(' '.repeat(qtyW + 1) + extra))
-        p(ln(row('', numCell(it.unit, it.total), cols)))
+      try {
+        blank() // respiro entre cabecalho/itens; item + modificadores ficam juntos
+        if (it.name.length <= descW && descW >= 6) {
+          // cabe em uma linha
+          p(ln(row(it.qty.padEnd(qtyW) + ' ' + it.name, numCell(it.unit, it.total), cols)))
+        } else {
+          // descricao longa: qty+nome quebram; unit/total na linha seguinte a direita
+          const lines = wrap(it.name, cols - qtyW - 1)
+          p(ln(it.qty.padEnd(qtyW) + ' ' + lines[0]))
+          for (const extra of lines.slice(1)) p(ln(' '.repeat(qtyW + 1) + extra))
+          p(ln(row('', numCell(it.unit, it.total), cols)))
+        }
+        for (const s of it.sabores ?? []) {
+          const sl = wrap(s, cols - 3)
+          for (const line of sl) p(ln(('   ' + line).slice(0, cols)))
+        }
+        if (it.obs) p(ln(('   >> ' + it.obs).slice(0, cols)))
+        // Complementos: pago (preco > 0) sai com o valor unitario alinhado na
+        // coluna de preco ("+R$ 2,00"); gratis mantem so "+ 1x Nome". O valor e
+        // informativo — o TOTAL da linha ja soma base + adicionais.
+        const det = it.addonsDetail && it.addonsDetail.length === it.addons.length ? it.addonsDetail : null
+        it.addons.forEach((addon, i) => {
+          const d = det?.[i]
+          const label = '   + ' + addon
+          if (d && d.price > 0) p(ln(row(label, numCell('', '+' + fmtBRL(d.price)), cols)))
+          else p(ln(label.slice(0, cols)))
+        })
+      } catch (e) {
+        console.error('[BUILD ITEM FAIL]', JSON.stringify(it), e.message, e.stack)
       }
-      if (it.obs) p(ln(('   >> ' + it.obs).slice(0, cols)))
-      for (const addon of it.addons) p(ln(('   + ' + addon).slice(0, cols)))
     }
     p(ln('-'.repeat(cols)))
 
     // Totais (UMA vez)
     const taxa = rawData.taxaEntrega ?? data.deliveryFee
-    if (taxa != null) {
-      if (data.subtotal != null) p(ln(row('Subtotal:', fmtBRL(data.subtotal))))
-      p(ln(row('Taxa entrega:', fmtBRL(taxa))))
+    const taxaServ = rawData.taxaServico ?? data.taxaServico
+    const taxaServPct = rawData.taxaServicoPercent ?? data.taxaServicoPercent
+    const hasServ = taxaServ != null && Number(taxaServ) > 0
+    // Cupom de desconto (estilo iFood). Valores do servidor; sem cupom = layout atual.
+    const descTotal = Number(data.descontoCupom ?? 0)
+    const cupomCod = data.cupomCodigo ? String(data.cupomCodigo).slice(0, 14) : null
+    const freteGratis = !!data.freteGratis
+    const descSub = freteGratis ? 0 : descTotal
+    const cupomTag = cupomCod ? ` (${cupomCod})` : ''
+    // Fechamento no Caixa (valores do servidor): desconto manual + couvert por pessoa.
+    const descManual = Number(rawData.desconto ?? data.desconto ?? 0)
+    const couvert = Number(rawData.couvert ?? data.couvert ?? 0)
+    const nrPessoas = rawData.nrPessoas ?? data.nrPessoas ?? null
+    if (taxa != null || hasServ || descTotal > 0 || descManual > 0 || couvert > 0) {
+      if (data.subtotal != null) p(ln(row('Subtotal:', fmtBRL(Number(data.subtotal) + descSub))))
+      if (descSub > 0) p(ln(row('Desconto' + cupomTag + ':', '-' + fmtBRL(descSub))))
+      if (descManual > 0) p(ln(row('Desconto:', '-' + fmtBRL(descManual))))
+      if (freteGratis && descTotal > 0) p(ln(row('Taxa entrega:', 'GRATIS' + cupomTag)))
+      else if (taxa != null) p(ln(row('Taxa entrega:', fmtBRL(taxa))))
+      if (hasServ) {
+        const lbl = 'Taxa de servico' + (taxaServPct ? ` (${taxaServPct}%)` : '') + ':'
+        p(ln(row(lbl, fmtBRL(taxaServ))))
+      }
+      if (couvert > 0) {
+        const lbl = nrPessoas ? `Couvert (${nrPessoas}x):` : 'Couvert:'
+        p(ln(row(lbl, fmtBRL(couvert))))
+      }
     }
+    blank() // respiro antes do TOTAL
     const total = rawData.total ?? data.total
-    if (total != null) p(BOLD_ON, ln(row('TOTAL:', fmtBRL(total))), ESC_INIT)
-    const pg = rawData.formaPagamento ?? data.paymentMethod
+    const totalComServ = rawData.totalComServico ?? data.totalComServico
+    // TOTAL = unica linha enfatizada: bold + dupla-altura.
+    if (hasServ && totalComServ != null) {
+      p(BOLD_ON, TALL_ON, ln(row('TOTAL C/ SERVICO:', fmtBRL(totalComServ))), ESC_INIT)
+    } else if (total != null) {
+      p(BOLD_ON, TALL_ON, ln(row('TOTAL:', fmtBRL(total))), ESC_INIT)
+    }
+    if (descTotal > 0) p(ln(ctr('Voce economizou ' + fmtBRL(descTotal) + cupomTag)))
+    blank() // separa TOTAL do grupo Pagamento/Valor Recebido/Troco
+    // Pré-conta NÃO mostra forma de pagamento, troco nem "PAGO".
+    const pg = preconta ? null : (rawData.formaPagamento ?? data.paymentMethod)
     if (pg) p(ln('Pagamento: ' + String(pg).toUpperCase()))
 
     // Dinheiro: valor recebido + troco (só quando informado no caixa)
     const isCashPayment = String(pg ?? '').toUpperCase().includes('DINHEIRO')
     const valorRecebido = rawData.valorRecebido ?? data.valorRecebido
-    if (isCashPayment && valorRecebido != null) {
+    if (!preconta && isCashPayment && valorRecebido != null) {
       const trocoVal = rawData.troco ?? data.troco ?? (Number(valorRecebido) - Number(total ?? 0))
       p(ln(row('Valor Recebido', fmtBRL(valorRecebido))))
       p(ln(row('Troco', fmtBRL(trocoVal))))
     }
 
     // Pagamento dividido (Dividir conta) — por pessoa: valor + forma
-    const splits = rawData.splitPayments ?? data.splitPayments
+    const splits = preconta ? null : (rawData.splitPayments ?? data.splitPayments)
     if (Array.isArray(splits) && splits.length > 0) {
+      blank()
       p(ln('-'.repeat(cols)))
       p(BOLD_ON, ln(ctr('PAGAMENTO DIVIDIDO')), ESC_INIT)
+      blank()
       for (const s of splits) {
         const label = String(s.label ?? 'Pessoa')
         const forma = String(s.paymentMethod ?? s.formaPagamento ?? '')
         const valor = s.amount != null ? fmtBRL(s.amount) : ''
         p(ln(row(label, (valor + (forma ? ' - ' + forma : '')).trim())))
+        // Taxa de servico proporcional por parte (informativo; nao altera o valor).
+        if (s.taxaServico != null && Number(s.taxaServico) > 0) {
+          p(ln(row('   + Taxa de servico:', fmtBRL(s.taxaServico))))
+        }
       }
     }
+    blank() // respiro antes do rodape
     p(eq())
+    blank()
 
     // Footer
-    p(ln(ctr('Powered by Pede+')))
+    const footerMsg = rawData.footerMessage ?? data.footerMessage
+    if (footerMsg) for (const fl of wrap(String(footerMsg), cols)) p(ln(ctr(fl)))
+    p(ln(ctr('Obrigado pela preferencia!')))
     p(ln(ctr('Nao e comprovante fiscal')))
-    p(FEED_CUT, CUT)
+    p(...brandFooter())
+    if (rawData._receiptOpts?.noCut === true) p(FEED_CUT)
+    else p(FEED_CUT, CUT)
     return b
   }
 
@@ -548,7 +1053,7 @@ function buildReceiptBuffer(rawData, cols) {
 
     // Header do estabelecimento (mesmo bloco do comprovante)
     p(BOLD_ON, ln(ctr(rawData.tenantName ?? data.tenantName ?? 'ESTABELECIMENTO')), ESC_INIT)
-    const endLinha = [rawData.tenantAddress ?? data.tenantAddress, rawData.tenantNumber]
+    const endLinha = [soLogradouro(rawData.tenantAddress ?? data.tenantAddress, rawData), rawData.tenantNumber]
       .filter((x) => x != null && x !== '').join(', ')
     if (endLinha) p(ln(ctr(endLinha)))
     const bairroCidade = [
@@ -623,7 +1128,9 @@ function buildReceiptBuffer(rawData, cols) {
     // Footer
     p(ln(ctr('Nao e comprovante fiscal')))
     p(ln(ctr('Powered by Pede+')))
-    p(FEED_CUT, CUT)
+    p(...brandFooter())
+    if (rawData._receiptOpts?.noCut === true) p(FEED_CUT)
+    else p(FEED_CUT, CUT)
     return b
   }
 
@@ -636,8 +1143,12 @@ function buildReceiptBuffer(rawData, cols) {
   // Reimpressão manual (ex.: botão "Recibo" do histórico): só a via do cliente,
   // NUNCA a via cozinha. O fluxo de criação do pedido não envia esta flag.
   const customerOnly = rawData._customerOnly === true
+  console.log('[CLIENTE-DEBUG] builder | type:', rawData.type ?? '?', '| serviceType:', data.serviceType, '| isDelivery:', isDelivery, '| isReceipt:', isReceipt, '| customerOnly:', customerOnly, '| _via:', rawData._via ?? '(sem)', '| _kitchenOnly:', rawData._kitchenOnly === true)
   if (customerOnly) console.log('[reprint] via cliente | type:', rawData.type ?? '?', '| isDelivery:', isDelivery, '| builder:', isDelivery ? 'buildClientVia' : isReceipt ? 'buildPaymentVia' : 'buildPaymentVia')
   if (rawData.type === 'caixa') return concat(buildCaixaVia())
+  // Pré-conta: reusa o builder do comprovante (itens/addons/obs/totais), mas com
+  // cabeçalho PRE-CONTA, aviso "NAO E DOCUMENTO FISCAL" e SEM pagamento/troco.
+  if (rawData.type === 'prebill') return concat(buildPaymentVia(true))
   if (isReceipt) return concat(buildPaymentVia())
   // Delivery: via cozinha e via cliente são DOIS cupons físicos. Cada via é UM
   // buffer contíguo com UM único corte no fim; printCupom envia cozinha ->
@@ -646,6 +1157,9 @@ function buildReceiptBuffer(rawData, cols) {
   // DR800 é mecânico/assíncrono e o texto seguinte passa da guilhotina antes).
   if (isDelivery) {
     if (customerOnly) return concat(buildClientVia())
+    // _kitchenOnly: na via da cozinha (order:new) imprime SÓ a comanda; o recibo
+    // do cliente sai pelo gate próprio do destino (delivery.autoPrint).
+    if (rawData._kitchenOnly === true) return concat(buildKitchenVia())
     return { kitchen: concat(buildKitchenVia()), client: concat(buildClientVia()), jobs: true }
   }
   if (customerOnly) return concat(buildPaymentVia())
@@ -681,12 +1195,15 @@ function printViaSpooler(printerName, buf) {
 
 const _comDelay = (ms) => new Promise((r) => setTimeout(r, ms))
 
-// Fila ÚNICA de jobs da impressora: garante que logo (raster contíguo) e texto
-// (chunked) NUNCA se sobreponham na COM7. Todo envio passa por aqui, serializado.
-let _printQueue = Promise.resolve()
-function _enqueue(fn) {
-  const job = _printQueue.then(fn)
-  _printQueue = job.catch(() => {}) // mantém a cadeia viva sem propagar erro
+// Fila POR ALVO: garante que logo (raster contíguo) e texto (chunked) NUNCA se
+// sobreponham NA MESMA impressora, mas mantém impressoras distintas isoladas —
+// um job travado num alvo não bloqueia os demais (roteamento multi-setor).
+const _printQueues = new Map()
+function _enqueue(fn, target) {
+  const key = String(target || '_default').trim().toUpperCase()
+  const prev = _printQueues.get(key) || Promise.resolve()
+  const job = prev.then(fn)
+  _printQueues.set(key, job.catch(() => {})) // mantém a cadeia do alvo viva sem propagar erro
   return job
 }
 
@@ -704,12 +1221,12 @@ function _sendRawNow(printerNameOrPort, buf) {
 function printRaw(printerNameOrPort, bufOrText) {
   const buf = Buffer.isBuffer(bufOrText) ? bufOrText : Buffer.from(bufOrText, 'binary')
   console.log('[printRaw]', printerNameOrPort, '| bytes:', buf.length)
-  return _enqueue(() => _sendRawNow(printerNameOrPort, buf))
+  return _enqueue(() => _sendRawNow(printerNameOrPort, buf), printerNameOrPort)
 }
 
 async function printCupom(data, printerName, cols, opts) {
   cols = cols || COLS
-  setPrintParams(opts) // encoding/codepage do tenant (default Daruma cp1252/ESC t 7)
+  setPrintParams(opts) // encoding/codepage do tenant (default perfil Epson cp1252/ESC t 16)
   let _logoBuffer = null
   let _logoBands = null
   // Logo APENAS no comprovante de pagamento e somente se habilitado na config.
@@ -745,7 +1262,24 @@ async function printCupom(data, printerName, cols, opts) {
       }
     }
   }
-  const buf = buildReceiptBuffer({ ...data, _logoBuffer }, cols)
+  // Perfil POR IMPRESSORA (roteamento multi-setor): aplica o ESC/POS do alvo
+  // IMEDIATAMENTE antes do build (síncrono) — fecha a janela de corrida com jobs
+  // concorrentes em outra impressora, pois o buffer já sai com corte/code page certos.
+  if (opts && opts.profile) { setActiveProfile(opts.profile); setPrintParams(opts) }
+  // Corte por impressora: noCut via opts (test-print/roteamento) OU via _receiptOpts
+  // (caminho roteado). Suprime GS V / ESC m no rodapé, mantém o FEED final.
+  const noCut = (opts && opts.noCut === true) || data._receiptOpts?.noCut === true
+  console.log('[printer] cut:', noCut ? '(suprimido por cortarPapel=false)' : [...CUT].map((b) => '0x' + b.toString(16).padStart(2, '0')).join(' '))
+  const _data = noCut ? { ...data, _receiptOpts: { ...(data._receiptOpts || {}), noCut: true } } : data
+  let buf = buildReceiptBuffer({ ..._data, _logoBuffer }, cols)
+
+  // Bipe ao imprimir (config do tenant). BEL (0x07) é o comando mais seguro/
+  // universal; impressoras sem buzzer simplesmente ignoram o byte.
+  if (data._receiptOpts?.beep === true) {
+    const BEEP = Buffer.from([0x07])
+    if (buf && buf.jobs) buf = { ...buf, kitchen: Buffer.concat([BEEP, buf.kitchen]) }
+    else if (Buffer.isBuffer(buf)) buf = Buffer.concat([BEEP, buf])
+  }
 
   // Delivery (cozinha + cliente): dois cupons no MESMO job atômico da fila.
   // Pausa entre as vias: garante que o corte da via cozinha conclua antes das
@@ -755,7 +1289,7 @@ async function printCupom(data, printerName, cols, opts) {
       await _sendRawNow(printerName, buf.kitchen)
       await _comDelay(500) // guilhotina atua (corte mecânico) antes da via cliente
       await _sendRawNow(printerName, buf.client)
-    })
+    }, printerName)
   }
 
   // COM/DR800 com logo: logo (raster) + texto (chunked) como UM job atômico na
@@ -769,7 +1303,7 @@ async function printCupom(data, printerName, cols, opts) {
         console.warn('[printCupom] logo ignorado no envio:', err?.message || err)
       }
       await _sendRawNow(printerName, buf) // mesmo job/fila => sem colisão na COM7
-    })
+    }, printerName)
   }
   return printRaw(printerName, buf)
 }
@@ -784,6 +1318,8 @@ function printTestCupom(printerName, cols, type, opts) {
   setPrintParams(opts) // teste usa o encoding/codepage selecionado pelo usuário
   // Teste rápido de acentos: imprime as palavras-chave para conferir visualmente.
   if (type === 'acentos') {
+    const noCut = opts && opts.noCut === true
+    console.log('[printer] cut:', noCut ? '(suprimido por cortarPapel=false)' : [...CUT].map((b) => '0x' + b.toString(16).padStart(2, '0')).join(' '))
     const seg = [
       ESC_INIT, charset(),
       BOLD_ON, ln(`TESTE ACENTOS (${ENCODING}/ESC t ${CODEPAGE_N})`), ESC_INIT,
@@ -795,7 +1331,7 @@ function printTestCupom(printerName, cols, type, opts) {
       ln('='.repeat(cols)),
       ln('Porção Camarão Refeição Promoção'),
       ln('Água Açaí Pão Limão Café Pêssego'),
-      FEED_CUT, CUT,
+      FEED_CUT, ...(noCut ? [] : [CUT]),
     ]
     return printRaw(printerName, Buffer.concat(seg.filter(Buffer.isBuffer)))
   }
@@ -862,4 +1398,7 @@ function getSerialPorts() {
   })
 }
 
-module.exports = { printCupom, printReceipt, printTestCupom, getPrinters, getSerialPorts, setPrintParams, buildReceiptBuffer }
+function getActiveProfile() { return _activeProfile }
+function getActiveColumns() { return COLS }
+
+module.exports = { printCupom, printReceipt, printTestCupom, getPrinters, getSerialPorts, setPrintParams, setActiveProfile, getActiveProfile, getActiveColumns, buildReceiptBuffer }

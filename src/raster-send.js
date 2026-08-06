@@ -18,11 +18,22 @@ const fs = require('fs')
 const BAUD_RATE = 9600
 const OPEN_RETRIES = 3
 const OPEN_BACKOFF_MS = 500
+const PRE_CLOSE_DELAY_MS = 200 // transmite o buffer físico antes de fechar (substitui drain)
 const POST_CLOSE_DELAY_MS = 300
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms))
 const isLockError = (e) => e && (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'EACCES')
 const devicePath = (name) => `\\\\.\\${name.trim().toUpperCase()}`
+
+// drain()/FlushFileBuffers não é suportado por portas COM virtuais (erro 50). Os
+// bytes já saíram pelo write -> falha de drain é NÃO-fatal.
+const isUnsupportedFlush = (e) =>
+  e && (e.code === 50 || e.code === 'ERROR_NOT_SUPPORTED' || e.code === 'ENOTSUP'
+    || /FlushFileBuffers|not.?supported|code 50/i.test(String(e.message || '')))
+async function drainSafe(port) {
+  try { await new Promise((res, rej) => port.drain((e) => (e ? rej(e) : res()))) }
+  catch (e) { if (!isUnsupportedFlush(e)) throw e }
+}
 
 // serialport (preferido): escreve o buffer COMPLETO de uma vez, drena, fecha.
 async function viaSerialport(comName, buffer) {
@@ -41,9 +52,12 @@ async function viaSerialport(comName, buffer) {
   }
   try {
     await new Promise((res, rej) => port.write(buffer, (e) => (e ? rej(e) : res())))   // 1 escrita contígua
-    await new Promise((res, rej) => port.drain((e) => (e ? rej(e) : res())))
+    await drainSafe(port)                                                              // best-effort (não-fatal em COM virtual)
   } finally {
-    await new Promise((res) => (port.isOpen ? port.close(() => res()) : res()))
+    await delay(PRE_CLOSE_DELAY_MS) // sem drain garantido: aguarda transmissão antes de fechar
+    await new Promise((res) => {
+      try { port.isOpen ? port.close(() => res()) : res() } catch { res() }
+    })
   }
   return true
 }

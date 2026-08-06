@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0a0a0a;
+    color: #fafafa;
+    -webkit-user-select: none;
+    overflow: hidden;
+  }
+  .wrap {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    padding: 22px 24px 20px;
+  }
+  .badge {
+    align-self: flex-start;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    color: #FB923C;
+    background: rgba(234, 88, 12, .12);
+    border: 1px solid rgba(234, 88, 12, .3);
+    padding: 4px 10px;
+    border-radius: 999px;
+  }
+  h1 { font-size: 20px; font-weight: 800; margin-top: 14px; }
+  .code { color: #FB923C; }
+  .info { margin-top: 6px; font-size: 14px; color: #a1a1aa; min-height: 18px; }
+  .q { margin-top: 16px; font-size: 14px; color: #d4d4d8; }
+  .actions { margin-top: auto; display: flex; gap: 10px; }
+  button {
+    flex: 1;
+    padding: 13px 0;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: filter .12s ease, transform .05s ease;
+  }
+  button:active { transform: translateY(1px); }
+  .print { background: #EA580C; color: #fff; }
+  .print:hover { filter: brightness(1.08); }
+  .ignore { background: transparent; color: #d4d4d8; border-color: #3f3f46; }
+  .ignore:hover { background: rgba(255,255,255,.05); }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <span class="badge">Novo pedido</span>
+    <h1>Pedido <span class="code" id="code">#?</span> chegou</h1>
+    <div class="info" id="info"></div>
+    <div class="q">Imprimir a comanda da cozinha?</div>
+    <div class="actions">
+      <button class="print" id="btn-print">Imprimir</button>
+      <button class="ignore" id="btn-ignore">Ignorar</button>
+    </div>
+  </div>
+<script>
+  const { ipcRenderer } = require('electron')
+  const params = new URLSearchParams(location.search)
+  const token = params.get('token')
+  const code = params.get('code') || '?'
+  const info = params.get('info') || ''
+  document.getElementById('code').textContent = '#' + code
+  document.getElementById('info').textContent = info
+  function send(action) { ipcRenderer.send('kitchen-prompt:action', { token, action }) }
+  document.getElementById('btn-print').addEventListener('click', () => send('print'))
+  document.getElementById('btn-ignore').addEventListener('click', () => send('ignore'))
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') send('print')
+    if (e.key === 'Escape') send('ignore')
+  })
+</script>
+</body>
+</html>

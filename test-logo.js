@@ -10,7 +10,7 @@ const { sendRaster } = require('./src/raster-send') // raster = escrita contígu
 
 // ── Config ──────────────────────────────────────────────────────────────────
 const LOGO_PATH = process.env.PEDE_LOGO || './logo-test.png' // arquivo local ou URL
-const COM       = (process.argv[2] || process.env.PEDE_PRINT_COM || 'COM7').trim()
+const COM       = (process.argv[2] || process.env.PEDE_PRINT_COM || 'COM8').trim()
 const WIDTH_PX  = 384            // múltiplo de 8 (384/8 = 48 widthBytes)
 const WIDTH_BYTES = WIDTH_PX / 8 // 48
 const THRESHOLD = Number(process.env.PEDE_LOGO_THRESHOLD || 128) // 0..255

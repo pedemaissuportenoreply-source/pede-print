@@ -7,7 +7,7 @@
 const iconv = require('iconv-lite')
 const { sendToComPort } = require('./src/serial-print')
 
-const COM  = (process.argv[2] || process.env.PEDE_PRINT_COM || 'COM7').trim()
+const COM  = (process.argv[2] || process.env.PEDE_PRINT_COM || 'COM8').trim()
 const COLS = 48
 const TXT  = 'TESTE INVERTIDO 123'
 

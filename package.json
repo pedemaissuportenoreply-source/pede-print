@@ -1,6 +1,6 @@
 {
   "name": "pede-print",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Agente de impressão automática para o Pede+",
   "main": "main.js",
   "scripts": {
@@ -22,6 +22,7 @@
     "iconv-lite": "^0.6.3",
     "jimp": "^0.22.12",
     "qrcode": "^1.5.4",
+    "serialport": "^12.0.0",
     "sharp": "^0.34.5",
     "socket.io-client": "^4.7.0"
   },
@@ -39,18 +40,18 @@
       "buildResources": "build"
     },
     "files": [
-      "main.js",
-      "socket.js",
-      "printer.js",
-      "updater.js",
+      "*.js",
+      "!test-*.js",
       "src/**",
-      "config-window.js",
-      "renderer/**"
+      "renderer/**",
+      "!renderer/_legacy/**"
     ],
     "asarUnpack": [
       "**/node_modules/@thiagoelg/node-printer/**",
       "**/node_modules/sharp/**",
-      "**/node_modules/@img/**"
+      "**/node_modules/@img/**",
+      "**/node_modules/@serialport/**",
+      "**/node_modules/serialport/**"
     ],
     "win": {
       "target": "nsis",
@@ -65,7 +66,7 @@
       "createStartMenuShortcut": true,
       "shortcutName": "Pede+ Print",
       "runAfterFinish": true,
-      "artifactName": "pede-print-setup-${version}.exe"
+      "artifactName": "PedePrint-Setup.${ext}"
     },
     "publish": [
       {
