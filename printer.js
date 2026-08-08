@@ -314,6 +314,9 @@ function normalizePayload(data) {
     previsao:      data.previsaoEntrega ?? data.previsao ?? data.tempoEstimadoEntrega ?? null,
     itemCount:     data.itemCount     ?? null,
     printedAt:     data.printedAt     ?? null,
+    // Horario combinado da retirada, ja formatado pelo backend ("o quanto antes"
+    // ou "HH:MM"). O agente so imprime — nunca deriva/adivinha.
+    retiradaLabel: data.retiradaLabel ?? null,
     items,
   }
 }
@@ -827,14 +830,28 @@ function buildReceiptBuffer(rawData, cols) {
       if (cnpj)                p(ln(ctr('CNPJ: ' + cnpj)))
     }
 
+    // Pagamento CAPTURADO de fato? Quem decide e o BACKEND (paymentCaptured no
+    // payload); o agente nunca adivinha. Ausente = payload antigo -> comportamento
+    // historico (comprovante de pagamento). Explicitamente false = ainda vai ser
+    // pago na entrega/retirada: a via NAO pode afirmar pagamento.
+    const naoPago = !preconta && rawData.paymentCaptured === false
+
     // Banner COMPROVANTE + MESA — emoldurado por "===" com respiro antes/depois.
+    // Sem captura o titulo vira "PEDIDO - <modalidade>" (nada de "comprovante").
     blank()
     p(eq())
-    p(BOLD_ON, ln(ctr(preconta ? 'PRE-CONTA' : 'COMPROVANTE DE PAGAMENTO')), ESC_INIT)
+    const banner = preconta
+      ? 'PRE-CONTA'
+      : naoPago
+        ? ('PEDIDO - ' + String(data.serviceType || 'PEDIDO')).trim()
+        : 'COMPROVANTE DE PAGAMENTO'
+    p(BOLD_ON, ln(ctr(banner)), ESC_INIT)
     // MESA limpa: "MESA 1 - #6177" (remove prefixo "Mesa/MESA" duplicado do valor).
     const tableClean = String(data.table ?? '').replace(/^\s*mesa\s*/i, '').trim()
-    const tituloPedido = [data.serviceType, tableClean].filter((x) => x != null && x !== '').join(' ')
-      + ' - #' + (data.orderCode || '?')
+    // Sem captura a modalidade ja esta no banner ("PEDIDO - RETIRADA") — nao repete.
+    const prefixoTitulo = [naoPago ? null : data.serviceType, tableClean]
+      .filter((x) => x != null && x !== '').join(' ')
+    const tituloPedido = (prefixoTitulo ? prefixoTitulo + ' - ' : '') + '#' + (data.orderCode || '?')
     p(ln(ctr(tituloPedido.trim())))
     p(eq())
     if (preconta) p(BOLD_ON, ln(ctr('*** NAO E DOCUMENTO FISCAL ***')), ESC_INIT)
@@ -857,9 +874,13 @@ function buildReceiptBuffer(rawData, cols) {
     const emitidoEm = rawData.emitidoEm ?? data.emitidoEm
     if (preconta && emitidoEm) info('Emitido', emitidoEm)
     const paidAt = rawData.paidAt ?? rawData.pagoEm
-    if (!preconta && paidAt)  info('Pago', fmtDate(paidAt))
+    // "Pago" so quando o dinheiro entrou de fato.
+    if (!preconta && !naoPago && paidAt) info('Pago', fmtDate(paidAt))
     const duracao = rawData.durationText ?? rawData.duracao
     if (duracao)              info('Duracao', duracao)
+    // Horario combinado da RETIRADA — texto pronto vindo do backend.
+    const retiradaLabel = rawData.retiradaLabel ?? data.retiradaLabel
+    if (retiradaLabel)        info('Retirada', String(retiradaLabel))
     p(ln('-'.repeat(cols)))
 
     // Itens — tabela: QTD | DESCRICAO | UNIT | TOTAL (total = qty x unit)
@@ -1001,7 +1022,13 @@ function buildReceiptBuffer(rawData, cols) {
     blank() // separa TOTAL do grupo Pagamento/Valor Recebido/Troco
     // Pré-conta NÃO mostra forma de pagamento, troco nem "PAGO".
     const pg = preconta ? null : (rawData.formaPagamento ?? data.paymentMethod)
-    if (pg) p(ln('Pagamento: ' + String(pg).toUpperCase()))
+    if (naoPago) {
+      // Ainda vai ser pago: rotulo honesto com a forma DESEJADA (texto do backend).
+      const aPagar = rawData.paymentDueLabel ?? pg
+      if (aPagar) p(BOLD_ON, ln('A PAGAR: ' + String(aPagar).toUpperCase()), ESC_INIT)
+    } else if (pg) {
+      p(ln('Pagamento: ' + String(pg).toUpperCase()))
+    }
 
     // Dinheiro: valor recebido + troco (só quando informado no caixa)
     const isCashPayment = String(pg ?? '').toUpperCase().includes('DINHEIRO')
@@ -1039,6 +1066,62 @@ function buildReceiptBuffer(rawData, cols) {
     if (footerMsg) for (const fl of wrap(String(footerMsg), cols)) p(ln(ctr(fl)))
     p(ln(ctr('Obrigado pela preferencia!')))
     p(ln(ctr('Nao e comprovante fiscal')))
+    p(...brandFooter())
+    if (rawData._receiptOpts?.noCut === true) p(FEED_CUT)
+    else p(FEED_CUT, CUT)
+    return b
+  }
+
+  // ── VIA DO CLIENTE — RETIRADA (etiqueta p/ grampear no pacote) ───────────────
+  // NAO e cupom: e uma ETIQUETA de identificacao. Codigo/senha e nome do cliente
+  // em fonte grande, itens compactos (qtd x nome) so p/ conferencia no balcao.
+  // Sem precos, sem totais, sem pagamento. Corte proprio respeitando noCut.
+  function buildViaClienteRetirada() {
+    const b = []
+    const p = (...x) => b.push(...x)
+    const blank = () => p(ln(''))
+    p(ESC_INIT, charset())
+
+    // Faixa RETIRADA: e o que o atendente enxerga de longe no maco de etiquetas.
+    p(eq())
+    p(...ctrBig('RETIRADA'))
+    p(eq())
+    blank()
+
+    // Codigo/senha do pedido — o maior elemento da etiqueta.
+    p(ln(ctr('PEDIDO')))
+    p(...ctrBig('#' + (data.orderCode || '?')))
+    blank()
+
+    const cliente = String(rawData.customer ?? data.customer ?? '').trim()
+    if (cliente) {
+      p(ln(ctr('CLIENTE')))
+      p(...ctrBig(cliente.toUpperCase()))
+      blank()
+    }
+
+    // Horario combinado: e a informacao que o balcao precisa ver na etiqueta.
+    const retiradaLabel = rawData.retiradaLabel ?? data.retiradaLabel
+    if (retiradaLabel) {
+      p(ln(ctr('RETIRAR')))
+      p(...ctrBig(String(retiradaLabel).toUpperCase()))
+      blank()
+    }
+
+    // Itens compactos: "2x Refrigerante Lata". Sem precos — a conta e outro papel.
+    const itens = data.items ?? []
+    if (itens.length) {
+      p(ln('-'.repeat(cols)))
+      for (const item of itens) {
+        const qty = Number(item.qty ?? 1) || 1
+        const linhas = wrap(qty + 'x ' + String(item.name ?? ''), cols)
+        p(ln(linhas[0]))
+        for (const extra of linhas.slice(1)) p(ln('   ' + extra.slice(0, cols - 3)))
+      }
+      p(ln('-'.repeat(cols)))
+    }
+
+    p(ln(ctr(date + '  ' + time)))
     p(...brandFooter())
     if (rawData._receiptOpts?.noCut === true) p(FEED_CUT)
     else p(FEED_CUT, CUT)
@@ -1146,6 +1229,11 @@ function buildReceiptBuffer(rawData, cols) {
   console.log('[CLIENTE-DEBUG] builder | type:', rawData.type ?? '?', '| serviceType:', data.serviceType, '| isDelivery:', isDelivery, '| isReceipt:', isReceipt, '| customerOnly:', customerOnly, '| _via:', rawData._via ?? '(sem)', '| _kitchenOnly:', rawData._kitchenOnly === true)
   if (customerOnly) console.log('[reprint] via cliente | type:', rawData.type ?? '?', '| isDelivery:', isDelivery, '| builder:', isDelivery ? 'buildClientVia' : isReceipt ? 'buildPaymentVia' : 'buildPaymentVia')
   if (rawData.type === 'caixa') return concat(buildCaixaVia())
+  // Etiqueta de retirada: via ADICIONAL enfileirada pelo backend no order:new.
+  // Tem prioridade sobre os demais templates e nunca imprime comanda/comprovante.
+  if (rawData.type === 'viaClienteRetirada' || rawData._printType === 'viaClienteRetirada') {
+    return concat(buildViaClienteRetirada())
+  }
   // Pré-conta: reusa o builder do comprovante (itens/addons/obs/totais), mas com
   // cabeçalho PRE-CONTA, aviso "NAO E DOCUMENTO FISCAL" e SEM pagamento/troco.
   if (rawData.type === 'prebill') return concat(buildPaymentVia(true))
