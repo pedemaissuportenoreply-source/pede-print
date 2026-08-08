@@ -143,6 +143,16 @@ function fmtBRL(v) {
   return 'R$ ' + (cents < 0 ? '-' : '') + int + ',' + dec
 }
 
+// Telefone "DD NNNNN-NNNN" (sem parenteses, sem +55). Sem masking: nenhum cupom
+// do Pede+ mascara o contato do cliente. Entrada invalida sai como veio.
+function fmtFone(v) {
+  let d = String(v ?? '').replace(/\D/g, '')
+  if ((d.length === 12 || d.length === 13) && d.startsWith('55')) d = d.slice(2)
+  if (d.length === 11) return `${d.slice(0, 2)} ${d.slice(2, 7)}-${d.slice(7)}`
+  if (d.length === 10) return `${d.slice(0, 2)} ${d.slice(2, 6)}-${d.slice(6)}`
+  return String(v ?? '').trim()
+}
+
 function fmtDate(iso) {
   try {
     const d   = new Date(iso)
@@ -1073,9 +1083,11 @@ function buildReceiptBuffer(rawData, cols) {
   }
 
   // ── VIA DO CLIENTE — RETIRADA (etiqueta p/ grampear no pacote) ───────────────
-  // NAO e cupom: e uma ETIQUETA de identificacao. Codigo/senha e nome do cliente
-  // em fonte grande, itens compactos (qtd x nome) so p/ conferencia no balcao.
-  // Sem precos, sem totais, sem pagamento. Corte proprio respeitando noCut.
+  // NAO e cupom fiscal: e a ETIQUETA de entrega no balcao. Codigo/senha, cliente e
+  // horario em fonte grande (identificacao de longe); itens com suas observacoes;
+  // TOTAL e status de pagamento em destaque (e o que diz se cobra ou nao na
+  // entrega). Todo campo e OPCIONAL: payload sem o campo => sem a linha, entao
+  // pedido antigo continua saindo igual. Corte proprio respeitando noCut.
   function buildViaClienteRetirada() {
     const b = []
     const p = (...x) => b.push(...x)
@@ -1093,14 +1105,8 @@ function buildReceiptBuffer(rawData, cols) {
     p(...ctrBig('#' + (data.orderCode || '?')))
     blank()
 
-    const cliente = String(rawData.customer ?? data.customer ?? '').trim()
-    if (cliente) {
-      p(ln(ctr('CLIENTE')))
-      p(...ctrBig(cliente.toUpperCase()))
-      blank()
-    }
-
     // Horario combinado: e a informacao que o balcao precisa ver na etiqueta.
+    // Fica ANTES do cliente — junto com o codigo, forma o bloco de identificacao.
     const retiradaLabel = rawData.retiradaLabel ?? data.retiradaLabel
     if (retiradaLabel) {
       p(ln(ctr('RETIRAR')))
@@ -1108,7 +1114,18 @@ function buildReceiptBuffer(rawData, cols) {
       blank()
     }
 
-    // Itens compactos: "2x Refrigerante Lata". Sem precos — a conta e outro papel.
+    const cliente = String(rawData.customer ?? data.customer ?? '').trim()
+    if (cliente) {
+      p(ln(ctr('CLIENTE')))
+      p(...ctrBig(cliente.toUpperCase()))
+    }
+    // WhatsApp e OPCIONAL (mesa/retirada): sem telefone NAO sai linha nenhuma.
+    const fone = String(rawData.phone ?? data.phone ?? '').trim()
+    if (fone) p(ln(ctr(fmtFone(fone))))
+    if (cliente || fone) blank()
+
+    // Itens compactos: "2x Refrigerante Lata" + a observacao logo abaixo, quando
+    // houver ("sem cebola"). Item sem obs nao ganha linha extra.
     const itens = data.items ?? []
     if (itens.length) {
       p(ln('-'.repeat(cols)))
@@ -1117,7 +1134,28 @@ function buildReceiptBuffer(rawData, cols) {
         const linhas = wrap(qty + 'x ' + String(item.name ?? ''), cols)
         p(ln(linhas[0]))
         for (const extra of linhas.slice(1)) p(ln('   ' + extra.slice(0, cols - 3)))
+        const obs = String(item.obs ?? '').trim()
+        if (obs) for (const ol of wrap('>> ' + obs, cols - 3)) p(ln('   ' + ol))
       }
+      p(ln('-'.repeat(cols)))
+    }
+
+    // TOTAL + status de pagamento: o bloco que decide se cobra na entrega.
+    const totalVia = rawData.total ?? data.total
+    if (totalVia != null) {
+      blank()
+      p(BOLD_ON, TALL_ON, ln(row('TOTAL:', fmtBRL(totalVia))), ESC_INIT)
+    }
+    // paymentCaptured e a verdade do BACKEND — o agente nunca deduz. Ausente
+    // (payload antigo) => nao imprime status algum.
+    if (rawData.paymentCaptured === true) {
+      p(...ctrBig('PAGO'))
+    } else if (rawData.paymentCaptured === false) {
+      const aPagar = rawData.paymentDueLabel ?? rawData.formaPagamento ?? data.paymentMethod
+      p(BOLD_ON, ln(ctr('A PAGAR: ' + String(aPagar ?? '').toUpperCase().trim())), ESC_INIT)
+    }
+    if (totalVia != null || rawData.paymentCaptured != null) {
+      blank()
       p(ln('-'.repeat(cols)))
     }
 
