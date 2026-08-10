@@ -216,7 +216,7 @@ function soLogradouro(addr, rawData = {}) {
   const texto = addr == null ? '' : String(addr).trim()
   if (!texto) return ''
   const norm = (v) => String(v ?? '')
-    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]/gi, '').toLowerCase()
   const cidadeUf = [rawData.tenantCity, rawData.tenantState].filter(Boolean).join('-')
   const redundantes = [rawData.tenantNeighborhood, rawData.tenantCity, rawData.tenantState, cidadeUf, rawData.tenantCep]
@@ -228,6 +228,51 @@ function soLogradouro(addr, rawData = {}) {
     return !redundantes.includes(p)
   })
   return partes.join(' · ')
+}
+
+// Sem acento, minusculo, sem pontuacao, espacos colapsados.
+function normEnd(v) {
+  return String(v ?? '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Logradouro + numero SEM duplicar o numero.
+//
+// DEFENSIVO de proposito: agentes pareados antes da correcao guardaram em
+// config.tenantAddress o logradouro JA com o numero ("Sitio Bode, 17"), e o
+// _tenantEnrich do main.js faz esse valor vencer o do job — o numero vinha de
+// novo em tenantNumber e o cabecalho saia "Sitio Bode, 17, 17". A mesma regra
+// vive no backend (common/endereco/logradouro.ts), mas ela so vale pra quem
+// parear de novo. Aqui conserta quem ja esta em campo.
+function enderecoComNumero(logradouro, numero) {
+  const rua = String(logradouro ?? '').trim()
+  const num = String(numero ?? '').trim()
+  if (!rua) return num
+  if (!num) return rua
+  const n = normEnd(num)
+  // Ja termina com o numero: como ultimo segmento apos virgula ("Bode, 17") ou
+  // solto no fim ("Bode 17").
+  const ultimo = normEnd(rua.split(',').pop())
+  const inteiro = normEnd(rua)
+  if (n && (ultimo === n || inteiro === n || inteiro.endsWith(' ' + n))) return rua
+  return rua + ', ' + num
+}
+
+// Title Case leve pro bairro: "feiticeiro" -> "Feiticeiro", preservando as
+// preposicoes em minusculo ("Vila da Paz"). So exibicao — o banco nao muda.
+const MINUSCULAS_END = new Set(['de', 'da', 'do', 'das', 'dos', 'e'])
+function titleCaseBairro(valor) {
+  const texto = String(valor ?? '').trim()
+  if (!texto) return texto
+  return texto.split(/\s+/).map((palavra, i) => {
+    const baixo = palavra.toLocaleLowerCase('pt-BR')
+    if (i > 0 && MINUSCULAS_END.has(baixo)) return baixo
+    return baixo.charAt(0).toLocaleUpperCase('pt-BR') + baixo.slice(1)
+  }).join(' ')
 }
 
 function normalizePayload(data) {
@@ -603,8 +648,8 @@ function buildReceiptBuffer(rawData, cols) {
     // 1) ESTABELECIMENTO (topo, centrado)
     if (data.tenantName) p(BOLD_ON, ln(ctr(String(data.tenantName))), ESC_INIT)
     const tEnd = [
-      [soLogradouro(data.tenantAddress, rawData), rawData.tenantNumber].filter((x) => x != null && x !== '').join(', '),
-      rawData.tenantNeighborhood,
+      enderecoComNumero(soLogradouro(data.tenantAddress, rawData), rawData.tenantNumber),
+      titleCaseBairro(rawData.tenantNeighborhood),
     ].filter((x) => x != null && x !== '').join(' - ')
     if (tEnd) p(ln(ctr(tEnd)))
     const tCity = [rawData.tenantCity, rawData.tenantState].filter((x) => x != null && x !== '').join('/')
@@ -825,11 +870,10 @@ function buildReceiptBuffer(rawData, cols) {
     p(BOLD_ON, TALL_ON, ln(ctr(rawData.tenantName ?? data.tenantName ?? 'ESTABELECIMENTO')), ESC_INIT)
     blank()
     if (rawData._receiptOpts?.exibirCabecalho !== false) {
-      const endLinha = [soLogradouro(rawData.tenantAddress ?? data.tenantAddress, rawData), rawData.tenantNumber]
-        .filter((x) => x != null && x !== '').join(', ')
+      const endLinha = enderecoComNumero(soLogradouro(rawData.tenantAddress ?? data.tenantAddress, rawData), rawData.tenantNumber)
       if (endLinha) p(ln(ctr(endLinha)))
       const bairroCidade = [
-        rawData.tenantNeighborhood,
+        titleCaseBairro(rawData.tenantNeighborhood),
         [rawData.tenantCity, rawData.tenantState].filter((x) => x != null && x !== '').join('/'),
       ].filter((x) => x != null && x !== '').join(' - ')
       if (bairroCidade) p(ln(ctr(bairroCidade)))
@@ -1174,11 +1218,10 @@ function buildReceiptBuffer(rawData, cols) {
 
     // Header do estabelecimento (mesmo bloco do comprovante)
     p(BOLD_ON, ln(ctr(rawData.tenantName ?? data.tenantName ?? 'ESTABELECIMENTO')), ESC_INIT)
-    const endLinha = [soLogradouro(rawData.tenantAddress ?? data.tenantAddress, rawData), rawData.tenantNumber]
-      .filter((x) => x != null && x !== '').join(', ')
+    const endLinha = enderecoComNumero(soLogradouro(rawData.tenantAddress ?? data.tenantAddress, rawData), rawData.tenantNumber)
     if (endLinha) p(ln(ctr(endLinha)))
     const bairroCidade = [
-      rawData.tenantNeighborhood,
+      titleCaseBairro(rawData.tenantNeighborhood),
       [rawData.tenantCity, rawData.tenantState].filter((x) => x != null && x !== '').join('/'),
     ].filter((x) => x != null && x !== '').join(' - ')
     if (bairroCidade) p(ln(ctr(bairroCidade)))
