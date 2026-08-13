@@ -540,7 +540,9 @@ function buildReceiptBuffer(rawData, cols) {
       p(ESC_INIT, charset())
       p(BOLD_ON, ...ctrBig(data.tenantName || 'ESTABELECIMENTO'))
       p(eq())
-      p(BOLD_ON, ...ctrBig('VIA COZINHA'))
+      // VIA DO BAR reusa este layout: o backend manda `viaTitulo` ('VIA BAR').
+      // Sem o campo (payload antigo) segue 'VIA COZINHA'.
+      p(BOLD_ON, ...ctrBig(String(data.viaTitulo || 'VIA COZINHA')))
       p(eq())
       // Bloco do pedido: UM retângulo preto contínuo. GS B liga UMA vez, cada
       // linha é padded até a largura total (borda a borda), o \n sai com o
