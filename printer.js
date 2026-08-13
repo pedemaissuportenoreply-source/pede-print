@@ -372,6 +372,10 @@ function normalizePayload(data) {
     // Horario combinado da retirada, ja formatado pelo backend ("o quanto antes"
     // ou "HH:MM"). O agente so imprime — nunca deriva/adivinha.
     retiradaLabel: data.retiradaLabel ?? null,
+    // Titulo da via de preparo ('VIA BAR' na via do bar). normalizePayload e uma
+    // ALLOWLIST: campo fora dela nunca chega ao builder — era por isso que a via
+    // do bar saia com o cabecalho 'VIA COZINHA' mesmo com o backend mandando.
+    viaTitulo:     data.viaTitulo     ?? null,
     items,
   }
 }

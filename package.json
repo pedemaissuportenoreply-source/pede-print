@@ -1,6 +1,6 @@
 {
   "name": "pede-print",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "description": "Agente de impressão automática para o Pede+",
   "main": "main.js",
   "scripts": {
