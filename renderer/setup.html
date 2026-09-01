@@ -22,6 +22,7 @@
       background: #2a2a2a; border: 1px solid #3a3a3a;
     }
     #status.connected    { color: #4ade80; border-color: #166534; background: #052e16; }
+    #status.reconnecting { color: #fbbf24; border-color: #78350f; background: #2d2410; }
     #status.disconnected { color: #f87171; border-color: #7f1d1d; background: #2d1010; }
 
     /* ── Conta conectada (sempre visível quando pareado) ──────────── */
@@ -185,6 +186,7 @@
       .app-name { color: #18181b; } .app-ver { color: #a1a1aa; }
       #status { background: #e4e4e7; border-color: #d4d4d8; }
       #status.connected    { color: #15803d; border-color: #86efac; background: #dcfce7; }
+      #status.reconnecting { color: #b45309; border-color: #fcd34d; background: #fef3c7; }
       #status.disconnected { color: #b91c1c; border-color: #fca5a5; background: #fee2e2; }
       .card { background: #fff; border-color: #e4e4e7; }
       .card-title, .done-title { color: #18181b; }
@@ -358,6 +360,15 @@
           cada pedido novo automaticamente. Pode fechar esta janela.
         </div>
         <div class="done-facts" id="done-facts"></div>
+      </div>
+      <!-- Iniciar com o Windows: sem isso, ligar o PC de manhã não basta —
+           alguém precisa lembrar de abrir o agente, e o pedido não imprime. -->
+      <div class="field" id="autostart-row">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input id="autostart" type="checkbox" style="width:auto;margin:0;accent-color:#FF6B00;" />
+          Iniciar com o Windows
+        </label>
+        <div class="hint">Abre sozinho na bandeja quando o computador ligar.</div>
       </div>
       <div class="btn-row">
         <button class="btn-primary" id="btn-tray">Minimizar para a bandeja</button>

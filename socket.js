@@ -2,6 +2,9 @@
 
 const { io } = require('socket.io-client')
 
+// Subir ANTES da rede é o caso normal (o app inicia junto com o Windows), então
+// a falha de conexão no boot não é erro: é espera. Tentativas rápidas primeiro,
+// depois um ciclo lento e infinito — o agente nunca fica "aberto mas morto".
 const MAX_FAST_ATTEMPTS = 10
 const FAST_DELAY_MS     = 3_000
 const SLOW_DELAY_MS     = 30_000
@@ -87,13 +90,17 @@ function _connect() {
     console.log('[socket] desconectado. motivo:', reason)
     if (reason === 'io server disconnect') {
       console.log('[socket] servidor rejeitou a conexão — verifique o token/apiKey!')
+      _onStatus?.('disconnected')
+      return
     }
-    _onStatus?.('disconnected')
+    // Queda de rede: o socket.io já vai retentar sozinho — "reconectando", não
+    // "desconectado", para o tenant saber que basta esperar.
+    _onStatus?.('reconnecting')
   })
 
   socket.on('connect_error', (err) => {
     console.log('[socket] erro de conexão:', err.message)
-    _onStatus?.('disconnected')
+    _onStatus?.('reconnecting')
   })
 
   // After MAX_FAST_ATTEMPTS, socket.io stops trying — we switch to slow polling
@@ -162,10 +169,13 @@ function _connect() {
   })
 }
 
+// Esgotadas as tentativas rápidas, entra o ciclo lento — que se reagenda a cada
+// falha, sem limite. Quando a rede aparecer, a próxima passada conecta sozinha.
 function _scheduleSlowReconnect() {
   _clearSlowTimer()
   slowTimer = setTimeout(() => {
     slowTimer = null
+    console.log('[socket] nova tentativa de conexão (ciclo lento)')
     _connect()
   }, SLOW_DELAY_MS)
 }

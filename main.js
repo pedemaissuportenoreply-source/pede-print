@@ -13,6 +13,7 @@ const routing = require('./printer-routing')
 const queue = require('./print-queue')
 const defaults = require('./config-defaults')
 const agentAuth = require('./auth-agent')
+const autostart = require('./autostart')
 
 // URL efetiva do backend. O cliente NUNCA digita isso: é a de produção, em https,
 // salvo override de dev (config.devMode + config.devServerUrl). Toda leitura de
@@ -55,17 +56,29 @@ if (!gotLock) {
   app.quit()
   process.exit(0)
 }
-app.on('second-instance', () => openConfigWindow())
+app.on('second-instance', (_e, argv) => {
+  // Clicou no atalho com o app já na bandeja: traz a janela em vez de subir
+  // outro processo. Se a segunda instância veio do login (--hidden), fica quieto.
+  if (!autostart.startedHidden(argv)) openConfigWindow()
+})
 
 // ─── Tray icon ────────────────────────────────────────────────────────────────
 
-function makeTrayIcon(connected) {
+// Três estados, porque "não conectado" não diz se vale esperar: laranja =
+// conectado (pode imprimir), amarelo = reconectando (a rede está voltando),
+// cinza = desconectado (precisa de ação).
+const STATUS_LABEL = {
+  connected:    'Conectado',
+  reconnecting: 'Reconectando...',
+  disconnected: 'Desconectado',
+}
+
+function makeTrayIcon(status) {
   const size = 16
   const buf = Buffer.alloc(size * size * 4)
-  // Orange (#FF6B00) when connected, gray (#888) when not
-  const r = connected ? 0xFF : 0x88
-  const g = connected ? 0x6B : 0x88
-  const b = 0x00
+  const [r, g, b] = status === 'connected'    ? [0xFF, 0x6B, 0x00]
+                  : status === 'reconnecting' ? [0xF5, 0xC2, 0x11]
+                  :                             [0x88, 0x88, 0x88]
   for (let i = 0; i < size * size; i++) {
     const o = i * 4
     buf[o]     = b    // BGRA on Windows
@@ -77,7 +90,7 @@ function makeTrayIcon(connected) {
 }
 
 function buildTrayMenu() {
-  const statusLabel = currentStatus === 'connected' ? '● Conectado' : '● Desconectado'
+  const statusLabel = '● ' + (STATUS_LABEL[currentStatus] || 'Desconectado')
   const cfg = store.get('config') || {}
   const items = [{ label: `Pede+ Print  —  ${statusLabel}`, enabled: false }]
   // Conta conectada SEMPRE visível na bandeja: sem isso não dava para saber em
@@ -110,8 +123,20 @@ function buildTrayMenu() {
     { label: 'Reconectar',    click: () => startSocket() },
     { label: 'Trocar conta',  click: () => { openConfigWindow(); void trocarConta() } },
     { label: 'Verificar atualizações', click: () => checkForUpdatesNow() },
+  )
+  // Espelha o estado REAL do registro do Windows: se desligarem por fora
+  // (Gerenciador de Tarefas), a marca some aqui também.
+  if (autostart.supported()) {
+    items.push({
+      label: 'Iniciar com o Windows',
+      type: 'checkbox',
+      checked: autostart.isEnabled(),
+      click: (item) => { autostart.setEnabled(store, item.checked); broadcastAutoStart() },
+    })
+  }
+  items.push(
     { type: 'separator' },
-    { label: 'Sair',          click: () => app.quit() },
+    { label: 'Sair',          click: () => quitApp() },
   )
   return Menu.buildFromTemplate(items)
 }
@@ -120,9 +145,26 @@ function refreshTray() {
   if (!tray || tray.isDestroyed()) return
   const cfg = store.get('config') || {}
   const who = cfg.tenantName ? ` · ${cfg.tenantName}` : ''
-  tray.setImage(makeTrayIcon(currentStatus === 'connected'))
-  tray.setToolTip(`Pede+ Print — ${currentStatus === 'connected' ? 'Conectado' : 'Desconectado'}${who}`)
+  tray.setImage(makeTrayIcon(currentStatus))
+  tray.setToolTip(`Pede+ Print — ${STATUS_LABEL[currentStatus] || 'Desconectado'}${who}`)
   tray.setContextMenu(buildTrayMenu())
+}
+
+// Sair de verdade. O X da janela só esconde pra bandeja — encerrar o processo é
+// decisão explícita, pelo menu da bandeja.
+function quitApp() {
+  app.isQuitting = true
+  app.quit()
+}
+
+// O estado do "Iniciar com o Windows" vive em dois lugares (bandeja e janela):
+// quem mudar avisa o outro, para nenhum dos dois mostrar o valor velho.
+function broadcastAutoStart() {
+  refreshTray()
+  const win = getConfigWindow()
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('autostart-changed', autostart.isEnabled())
+  }
 }
 
 // ─── Status / broadcast ───────────────────────────────────────────────────────
@@ -1110,6 +1152,19 @@ ipcMain.handle('test-print', async (_, { printerName, cols, type, codepage, enco
 
 ipcMain.handle('get-status', () => currentStatus)
 
+// Sempre o estado REAL lido do Windows, nunca só a preferência salva: se o
+// usuário desligar o item pelo Gerenciador de Tarefas, a tela mostra desligado.
+ipcMain.handle('get-autostart', () => ({
+  supported: autostart.supported(),
+  enabled:   autostart.isEnabled(),
+}))
+
+ipcMain.handle('set-autostart', (_, enabled) => {
+  const now = autostart.setEnabled(store, enabled)
+  refreshTray()
+  return { supported: autostart.supported(), enabled: now }
+})
+
 // Ação do popup próprio da cozinha: "Imprimir" roda a MESMA rotina (honra vias);
 // "Ignorar" só fecha. Fecha a janela que disparou de qualquer forma.
 ipcMain.on('kitchen-prompt:action', (e, { token, action }) => {
@@ -1130,7 +1185,15 @@ ipcMain.on('kitchen-prompt:action', (e, { token, action }) => {
 app.whenReady().then(async () => {
   app.setAppUserModelId('com.pedemais.print')
 
-  tray = new Tray(makeTrayIcon(false))
+  // Subiu pelo login do Windows? Então vai direto pra bandeja: o caixa liga o PC
+  // e não pode ganhar uma janela na cara.
+  const bootHidden = autostart.startedHidden()
+  // Ligado por padrão na primeira execução; depois disso só reconcilia o que o
+  // usuário escolheu (idempotente — não reescreve o registro se já estiver certo).
+  autostart.sync(store)
+  console.log('[main] boot | hidden:', bootHidden, '| autostart:', autostart.isEnabled())
+
+  tray = new Tray(makeTrayIcon('disconnected'))
   tray.setToolTip('Pede+ Print')
   tray.setContextMenu(buildTrayMenu())
   tray.on('click', () => openConfigWindow())
@@ -1146,8 +1209,9 @@ app.whenReady().then(async () => {
 
   // Primeiro uso (sem chave ou sem impressora): abre o assistente automaticamente.
   // Já configurado: conecta direto, sem abrir janela — vai pra bandeja sozinho.
-  if (_needsSetup(effectiveConfig())) openConfigWindow()
-  else startSocket()
+  const precisaConfigurar = _needsSetup(effectiveConfig())
+  if (precisaConfigurar && !bootHidden) openConfigWindow()
+  if (!precisaConfigurar) startSocket()
 
   // Pendências que sobreviveram ao restart: tenta drenar já e segue vigiando a
   // volta da impressora (TTL vencido não imprime sozinho — vira reimpressão manual).
@@ -1159,4 +1223,4 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', (e) => e.preventDefault())
 
-app.on('before-quit', () => cleanupSocket())
+app.on('before-quit', () => { app.isQuitting = true; cleanupSocket() })

@@ -1,6 +1,6 @@
 'use strict'
 
-const { BrowserWindow } = require('electron')
+const { app, BrowserWindow } = require('electron')
 const path = require('path')
 
 let configWindow = null
@@ -28,6 +28,14 @@ function openConfigWindow() {
 
   configWindow.setMenu(null)
   configWindow.loadFile(path.join(__dirname, 'renderer', 'setup.html'))
+
+  // Fechar no X esconde pra bandeja: o agente segue conectado e imprimindo.
+  // Encerrar de verdade é só pelo "Sair" da bandeja (que marca app.isQuitting).
+  configWindow.on('close', (e) => {
+    if (app.isQuitting) return
+    e.preventDefault()
+    configWindow.hide()
+  })
   configWindow.on('closed', () => { configWindow = null })
 }
 

@@ -75,6 +75,13 @@ async function init() {
 
   // Passo 3
   byId('btn-tray').addEventListener('click', () => ipcRenderer.invoke('hide-to-tray'))
+
+  // Iniciar com o Windows: o toggle e o item da bandeja mudam o mesmo estado.
+  byId('autostart').addEventListener('change', onAutoStartToggle)
+  ipcRenderer.on('autostart-changed', (_, on) => { byId('autostart').checked = !!on })
+  // Ao voltar pra janela, relê do sistema — pode ter mudado por fora.
+  window.addEventListener('focus', () => { void refreshAutoStart() })
+  void refreshAutoStart()
   byId('btn-back-printer').addEventListener('click', () => { show('printer'); loadPrinters(false) })
   byId('btn-logout').addEventListener('click', doLogout)
 
@@ -601,11 +608,40 @@ function show(name) {
   }
 }
 
+// Três estados: conectado / reconectando / desconectado. "Reconectando" existe
+// porque o agente sobe junto com o Windows, muitas vezes antes da rede — e aí
+// esperar é o certo, não mexer em nada.
 function setStatus(status) {
   const elx = byId('status')
-  const on = status === 'connected'
-  elx.textContent = on ? '● Conectado' : '● Desconectado'
-  elx.className = on ? 'connected' : 'disconnected'
+  const label = status === 'connected'    ? '● Conectado'
+              : status === 'reconnecting' ? '● Reconectando...'
+              :                             '● Desconectado'
+  elx.textContent = label
+  elx.className = status === 'connected' ? 'connected' : status === 'reconnecting' ? 'reconnecting' : 'disconnected'
+}
+
+// Reflete o estado REAL do registro do Windows (não a preferência salva): se
+// desligarem por fora, pelo Gerenciador de Tarefas, a tela mostra desligado.
+async function refreshAutoStart() {
+  const row = byId('autostart-row')
+  if (!row) return
+  const st = await ipcRenderer.invoke('get-autostart')
+  row.style.display = st && st.supported ? '' : 'none'
+  byId('autostart').checked = !!(st && st.enabled)
+}
+
+async function onAutoStartToggle() {
+  const box = byId('autostart')
+  box.disabled = true
+  try {
+    const st = await ipcRenderer.invoke('set-autostart', box.checked)
+    box.checked = !!(st && st.enabled)
+    msg('done-msg', box.checked
+      ? 'O Pede+ Print vai abrir sozinho quando o Windows iniciar.'
+      : 'O Pede+ Print não vai mais abrir sozinho com o Windows.', 'dim')
+  } finally {
+    box.disabled = false
+  }
 }
 
 function msg(id, text, kind) {
