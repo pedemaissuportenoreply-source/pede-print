@@ -2,9 +2,19 @@ node_modules/
 dist/
 out/
 release/
-# Dumps de impressao (printer-in-*.json / printer-buf-*.bin) — carregam dados
-# reais de cliente e de tenant: customer, customerPhone, clienteNome, tenantCnpj.
+# Dumps de impressao e de spooler. Carregam dado real de cliente e de tenant
+# (customer, customerPhone, clienteNome, tenantCnpj) e nao ha por que versionar.
+# O repositorio e PUBLICO: aqui um commit errado nao se conserta com .gitignore
+# depois, porque o blob fica no historico para sempre.
 tmp/
+printer-in-*.json
+printer-buf-*.bin
+
+# Despejo de spooler solto na RAIZ, do tipo "Daruma DR800 Spooler (Copiar 1)" —
+# sem extensao e com espacos no nome, gerado ao copiar a fila de impressao do
+# Windows. As duas grafias cobrem core.ignorecase ligado ou desligado.
+/*Spooler*
+/*spooler*
 .DS_Store
 *.log
 
