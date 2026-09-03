@@ -1,6 +1,6 @@
 {
   "name": "pede-print",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Agente de impressão automática para o Pede+",
   "author": "Pede+ <jnrodrigues38@gmail.com>",
   "main": "main.js",
@@ -55,8 +55,7 @@
       "**/node_modules/serialport/**"
     ],
     "win": {
-      "target": "nsis",
-      "signAndEditExecutable": false
+      "target": "nsis"
     },
     "nsis": {
       "oneClick": false,
