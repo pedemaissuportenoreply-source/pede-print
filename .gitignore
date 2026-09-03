@@ -2,6 +2,9 @@ node_modules/
 dist/
 out/
 release/
+# Dumps de impressao (printer-in-*.json / printer-buf-*.bin) — carregam dados
+# reais de cliente e de tenant: customer, customerPhone, clienteNome, tenantCnpj.
+tmp/
 .DS_Store
 *.log
 
