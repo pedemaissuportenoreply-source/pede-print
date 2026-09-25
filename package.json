@@ -6,6 +6,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "test": "node --test test/kitchen-guard.test.js",
     "test-logo": "node test-logo.js",
     "test-codepage": "node test-codepage.js",
     "test-inverted": "node test-inverted.js",

@@ -14,6 +14,7 @@ const queue = require('./print-queue')
 const defaults = require('./config-defaults')
 const agentAuth = require('./auth-agent')
 const autostart = require('./autostart')
+const { viaKey, pedidoEncerrado, createHandledSet } = require('./kitchen-guard')
 
 // URL efetiva do backend. O cliente NUNCA digita isso: é a de produção, em https,
 // salvo override de dev (config.devMode + config.devServerUrl). Toda leitura de
@@ -46,6 +47,8 @@ let currentStatus = 'disconnected'
 // Pedidos aguardando confirmação de impressão da cozinha (auto-print desligado).
 const _pendingKitchen = new Map()
 let _kitchenSeq = 0
+// Vias de cozinha já oferecidas (impressas OU ignoradas), persistidas por pedido+rodada.
+const _kitchenHandled = createHandledSet(store)
 
 // Largura padrão única do cupom (80mm = 48 colunas)
 const DEFAULT_COLS = 48
@@ -199,7 +202,8 @@ function _rememberJobId(jobId) {
 function _isDuplicate(data) {
   const ids = [data?.id, data?.numeroPedido, data?.code, data?.orderCode]
     .filter((value) => value != null && String(value).trim() !== '')
-    .map((value) => String(value))
+    // Rodada nova do MESMO pedido não é duplicata da anterior.
+    .map((value) => String(value) + (data?._rodada != null ? `:r${data._rodada}` : ''))
   if (ids.length === 0) return false
   if (ids.some((id) => _printedIds.has(id))) return true
   ids.forEach((id) => _printedIds.add(id))
@@ -797,6 +801,20 @@ function handlePrintEvent(event, data) {
     return
   }
 
+  // Pedido já pago/fechado/cancelado nunca vira via de cozinha.
+  if (pedidoEncerrado(data)) {
+    console.log('[SKIP] via de cozinha de pedido encerrado | status:', data?.status ?? '?')
+    return
+  }
+  // Uma oferta por pedido+rodada: "Imprimir" e "Ignorar" contam como tratado,
+  // inclusive após restart/reconexão.
+  const vKey = viaKey(event, data)
+  if (_kitchenHandled.has(vKey)) {
+    console.log('[SKIP] via de cozinha já tratada | key:', vKey)
+    return
+  }
+  _kitchenHandled.add(vKey)
+
   // Auto-print da COZINHA controlado pela config do tenant. Regra: SÓ imprime
   // direto quando === true. Qualquer outro valor (false/undefined) => popup
   // PRÓPRIO perguntando; nunca imprime silenciosamente sem confirmação.
@@ -1166,7 +1184,8 @@ ipcMain.handle('set-autostart', (_, enabled) => {
 })
 
 // Ação do popup próprio da cozinha: "Imprimir" roda a MESMA rotina (honra vias);
-// "Ignorar" só fecha. Fecha a janela que disparou de qualquer forma.
+// "Ignorar" só fecha — a via já ficou marcada como tratada (kitchen-guard) ao ser
+// oferecida, então não volta a ser oferecida. Fecha a janela de qualquer forma.
 ipcMain.on('kitchen-prompt:action', (e, { token, action }) => {
   const pending = _pendingKitchen.get(token)
   _pendingKitchen.delete(token)
