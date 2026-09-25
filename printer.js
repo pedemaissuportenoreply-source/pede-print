@@ -1104,16 +1104,48 @@ function buildReceiptBuffer(rawData, cols) {
     if (Array.isArray(splits) && splits.length > 0) {
       blank()
       p(ln('-'.repeat(cols)))
-      p(BOLD_ON, ln(ctr('PAGAMENTO DIVIDIDO')), ESC_INIT)
+      // Titulo vem do servidor: 'PAGAMENTO MISTO' quando as linhas sao FORMAS de
+      // um pagador so, 'PAGAMENTO DIVIDIDO' quando sao PESSOAS. ASCII puro.
+      const splitTitulo = String(rawData.splitTitulo ?? data.splitTitulo ?? 'PAGAMENTO DIVIDIDO')
+      p(BOLD_ON, ln(ctr(splitTitulo)), ESC_INIT)
       blank()
       for (const s of splits) {
+        // O rotulo da parte vem INTEIRO do servidor (o Caixa aceita ate 60, e o
+        // banco guarda o que foi digitado). Quem corta pela largura e AQUI, e so
+        // aqui. Quando nome + valor nao cabem na mesma linha, o nome sobe sozinho
+        // e o valor desce alinhado a direita: cortar o VALOR nunca e opcao.
         const label = String(s.label ?? 'Pessoa')
         const forma = String(s.paymentMethod ?? s.formaPagamento ?? '')
         const valor = s.amount != null ? fmtBRL(s.amount) : ''
-        p(ln(row(label, (valor + (forma ? ' - ' + forma : '')).trim())))
+        const direita = (valor + (forma ? ' - ' + forma : '')).trim()
+        if (label.length + 1 + direita.length <= cols) {
+          p(ln(row(label, direita)))
+        } else {
+          for (const parte of wrap(label, cols)) p(ln(parte))
+          p(ln(row('', direita)))
+        }
         // Taxa de servico proporcional por parte (informativo; nao altera o valor).
         if (s.taxaServico != null && Number(s.taxaServico) > 0) {
           p(ln(row('   + Taxa de servico:', fmtBRL(s.taxaServico))))
+        }
+        // Troco DAQUELA parte (so nas partes em dinheiro cobradas uma a uma).
+        if (s.troco != null && Number(s.troco) > 0) {
+          p(ln(row('   Troco:', fmtBRL(s.troco))))
+        }
+        // Itens DAQUELA pessoa, com a quantidade real dela ("2x Agua",
+        // "1/3 Refrigerante"). O rotulo ja chega ASCII do servidor; o replace
+        // abaixo e a rede contra fracao unicode ("1/2" nunca "1/2" tipografico),
+        // que a codepage da bobina nao tem.
+        if (Array.isArray(s.itens) && s.itens.length > 0) {
+          for (const it of s.itens) {
+            const rotulo = String(it.rotulo ?? '')
+              .replace(/½/g, '1/2').replace(/⅓/g, '1/3').replace(/⅔/g, '2/3')
+              .replace(/¼/g, '1/4').replace(/¾/g, '3/4')
+            const nome = String(it.nome ?? 'Item')
+            const valor = it.valor != null ? fmtBRL(it.valor) : ''
+            // 3 de recuo: alinha sob o label da parte sem competir com ela.
+            p(ln(row('   ' + (rotulo ? rotulo + ' ' : '') + nome, valor)))
+          }
         }
       }
     }
