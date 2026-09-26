@@ -745,7 +745,7 @@ function handlePrintEvent(event, data) {
     // forçaria o comprovante de pagamento). Pedidos/pagamentos seguem como antes.
     // COMANDA (type=kitchen, reimpressão manual do KDS): também NÃO marca
     // _via:'cliente' — o builder cai em buildKitchenVia e sai a comanda.
-    const isCaixa = data.type === 'caixa'
+    const isCaixa = data.type === 'caixa' || data.type === 'fechamento-caixa'
     const isKitchen = data.type === 'kitchen'
     console.log('[REPRINT-DEBUG] receipt:print | type:', data.type, '| setor:', data.setor ?? '(sem)', '| via:', (isCaixa || isKitchen) ? '(template do type)' : 'cliente')
     const enriched = _tenantEnrich((isCaixa || isKitchen) ? { ...data } : { ...data, _via: 'cliente' }, config)

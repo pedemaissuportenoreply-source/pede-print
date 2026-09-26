@@ -1,0 +1,60 @@
+                 Pizzaria Teste
+================================================
+              FECHAMENTO DE CAIXA
+                   Sessao #7
+------------------------------------------------
+Operador:                                 Junior
+Abertura:                       26/09/2026 08:00
+Fechamento:                     26/09/2026 18:00
+Valor de abertura:                      R$ 50,00
+------------------------------------------------
+VENDAS POR FORMA DE PAGAMENTO
+Dinheiro:                               R$ 47,00
+PIX:                                    R$ 18,00
+Cartao:                                 R$ 10,00
+------------------------------------------------
+VENDAS POR ATENDIMENTO
+Balcao (2):                             R$ 43,00
+Garcom (1):                             R$ 22,00
+------------------------------------------------
+TOTAL DE VENDAS:                        R$ 75,00
+Nro pedidos:                                   4
+Ticket medio:                           R$ 18,75
+------------------------------------------------
+SUPRIMENTOS
++ Troco                                 R$ 10,00
+Total suprimentos:                     +R$ 10,00
+SANGRIAS
+- Banco                                  R$ 5,00
+Total sangrias:                         -R$ 5,00
+------------------------------------------------
+DESCONTOS DA SESSAO
+Manual (1 ped):                         -R$ 5,00
+Cupom (1 ped):                          -R$ 2,00
+  QATESTE10 x1                          -R$ 2,00
+TOTAL DESCONTOS:                        -R$ 7,00
+Bruto (itens):                          R$ 70,00
+(-) Descontos:                           R$ 7,00
+(+) Taxa servico:                        R$ 2,00
+(=) Cobrado:                            R$ 65,00
+#100 Mesa 1 12:00
+  Ana                                   -R$ 1,00
+#101 Mesa 1 12:01
+  QATESTE10 Ana                         -R$ 3,00
+#102 Mesa 1 12:02
+  Ana                                   -R$ 1,00
+================================================
+SALDO ESPERADO:                        R$ 102,00
+Valor contado:                         R$ 100,00
+DIFERENCA:                              R$ -2,00
+================================================
+            Nao e comprovante fiscal
+                Powered by Pede+
+
+               Emitido por Pede+
+                pedeplus.com.br
+
+
+
+
+

@@ -128,6 +128,24 @@ function ln(text) { return iconv.encode(String(text) + '\n', ENCODING) }
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
 
+// Texto de dado do usuário no cupom: sem byte de controle (um ESC/GS no nome do
+// cliente ou no código do cupom viraria comando da impressora), uma linha só.
+function limpoTexto(v, max = 40) {
+  return String(v ?? '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max)
+}
+
+// Fechamento de caixa: mesmo teto do backend (MAX_PEDIDOS_IMPRESSOS).
+const MAX_DESCONTOS_IMPRESSOS = 30
+const TIPO_ATENDIMENTO = {
+  MESA: 'Mesa', BALCAO: 'Balcao', DELIVERY: 'Delivery', RETIRADA: 'Retirada',
+  QR: 'QR Code', WAITER: 'Garcom', COUNTER: 'Balcao',
+}
+
 // Mapeia origem/canal técnico para texto amigável (Atendido por).
 const ORIGIN_MAP = { QR_CODE: 'QR Code', GARCOM: 'Garcom', BALCAO: 'Balcao', CAIXA: 'Caixa' }
 function fmtOrigin(v) {
@@ -1249,34 +1267,38 @@ function buildReceiptBuffer(rawData, cols) {
   }
 
   // ── RELATORIO DE CAIXA (fechamento de sessao) — layout dedicado ───────────────
+  // FECHAMENTO DE CAIXA (type 'caixa' — alias 'fechamento-caixa'). Todo texto que
+  // veio de dado do usuário passa por limpoTexto (nenhum byte de controle ESC/POS
+  // no cupom); lista de descontos limitada a MAX_DESCONTOS_IMPRESSOS + "e mais N".
   function buildCaixaVia() {
     const b = []
     const p = (...x) => b.push(...x)
+    const L = limpoTexto
     p(ESC_INIT, charset())
 
     // Header do estabelecimento (mesmo bloco do comprovante)
-    p(BOLD_ON, ln(ctr(rawData.tenantName ?? data.tenantName ?? 'ESTABELECIMENTO')), ESC_INIT)
+    p(BOLD_ON, ln(ctr(L(rawData.tenantName ?? data.tenantName ?? 'ESTABELECIMENTO', cols))), ESC_INIT)
     const endLinha = enderecoComNumero(soLogradouro(rawData.tenantAddress ?? data.tenantAddress, rawData), rawData.tenantNumber)
-    if (endLinha) p(ln(ctr(endLinha)))
+    if (endLinha) p(ln(ctr(L(endLinha, cols))))
     const bairroCidade = [
       titleCaseBairro(rawData.tenantNeighborhood),
       [rawData.tenantCity, rawData.tenantState].filter((x) => x != null && x !== '').join('/'),
     ].filter((x) => x != null && x !== '').join(' - ')
-    if (bairroCidade) p(ln(ctr(bairroCidade)))
-    if (rawData.tenantCep)   p(ln(ctr('CEP: ' + rawData.tenantCep)))
+    if (bairroCidade) p(ln(ctr(L(bairroCidade, cols))))
+    if (rawData.tenantCep)   p(ln(ctr('CEP: ' + L(rawData.tenantCep, 12))))
     const wpp = rawData.tenantPhone ?? data.tenantPhone
-    if (wpp)                 p(ln(ctr('WhatsApp: ' + wpp)))
+    if (wpp)                 p(ln(ctr('WhatsApp: ' + L(wpp, 20))))
     const cnpj = rawData.tenantCnpj ?? data.tenantCnpj
-    if (cnpj)                p(ln(ctr('CNPJ: ' + cnpj)))
+    if (cnpj)                p(ln(ctr('CNPJ: ' + L(cnpj, 20))))
     p(eq())
 
     // Titulo
-    p(BOLD_ON, ln(ctr('RELATORIO DE CAIXA')), ESC_INIT)
-    if (rawData.sessaoId != null) p(ln(ctr('Sessao #' + rawData.sessaoId)))
+    p(BOLD_ON, ln(ctr('FECHAMENTO DE CAIXA')), ESC_INIT)
+    if (rawData.sessaoId != null) p(ln(ctr('Sessao #' + L(rawData.sessaoId, 10))))
     p(ln('-'.repeat(cols)))
 
     // Periodo
-    if (rawData.operator)  p(ln(row('Operador:', String(rawData.operator))))
+    if (rawData.operator)  p(ln(row('Operador:', L(rawData.operator, Math.min(32, cols - 10)))))
     if (rawData.openedAt)  p(ln(row('Abertura:', fmtDate(rawData.openedAt))))
     if (rawData.closedAt)  p(ln(row('Fechamento:', fmtDate(rawData.closedAt))))
     p(ln(row('Valor de abertura:', fmtBRL(rawData.valorAbertura ?? 0))))
@@ -1295,32 +1317,84 @@ function buildReceiptBuffer(rawData, cols) {
     }
     if ((pay.fiado ?? 0) > 0)  p(ln(row('Fiado:', fmtBRL(pay.fiado))))
     if ((pay.outros ?? 0) > 0) p(ln(row('Outros:', fmtBRL(pay.outros))))
+
+    // Vendas por tipo de atendimento
+    const tipos = Array.isArray(rawData.porTipo) ? rawData.porTipo : []
+    if (tipos.length) {
+      p(ln('-'.repeat(cols)))
+      p(BOLD_ON, ln('VENDAS POR ATENDIMENTO'), ESC_INIT)
+      for (const t of tipos) {
+        const nome = TIPO_ATENDIMENTO[t?.tipo] ?? L(t?.tipo, 20)
+        p(ln(row(`${nome} (${Number(t?.count) || 0}):`, fmtBRL(t?.total ?? 0))))
+      }
+    }
     p(ln('-'.repeat(cols)))
     p(BOLD_ON, ln(row('TOTAL DE VENDAS:', fmtBRL(rawData.totalVendas ?? 0))), ESC_INIT)
     if (rawData.numPedidos != null) {
-      p(ln(row('Nro pedidos:', String(rawData.numPedidos))))
+      p(ln(row('Nro pedidos:', String(Number(rawData.numPedidos) || 0))))
       const ticket = rawData.numPedidos > 0 ? (rawData.totalVendas ?? 0) / rawData.numPedidos : 0
       p(ln(row('Ticket medio:', fmtBRL(ticket))))
     }
 
+    // Recebimentos de fiado: entrada de caixa, fora do total de vendas
+    const rf = rawData.recebimentosFiado
+    if (rf && Number(rf.total) > 0) {
+      p(ln('-'.repeat(cols)))
+      p(BOLD_ON, ln('RECEBIMENTOS DE FIADO'), ESC_INIT)
+      p(ln(row(`Total (${Number(rf.quantidade) || 0}):`, fmtBRL(rf.total))))
+      if (Number(rf.dinheiro) > 0) p(ln(row('Em dinheiro:', fmtBRL(rf.dinheiro))))
+    }
+
     // Suprimentos / Sangrias
-    const sups = rawData.suprimentos ?? []
-    const sangs = rawData.sangrias ?? []
+    const sups = Array.isArray(rawData.suprimentos) ? rawData.suprimentos : []
+    const sangs = Array.isArray(rawData.sangrias) ? rawData.sangrias : []
     p(ln('-'.repeat(cols)))
     p(BOLD_ON, ln('SUPRIMENTOS'), ESC_INIT)
-    if (sups.length) for (const m of sups) p(ln(row('+ ' + (m.motivo || 'Suprimento'), fmtBRL(m.valor ?? 0))))
+    if (sups.length) for (const m of sups) p(ln(row('+ ' + (L(m?.motivo, 28) || 'Suprimento'), fmtBRL(m?.valor ?? 0))))
     else p(ln('Nenhum'))
     p(ln(row('Total suprimentos:', '+' + fmtBRL(rawData.totalSuprimentos ?? 0))))
     p(BOLD_ON, ln('SANGRIAS'), ESC_INIT)
-    if (sangs.length) for (const m of sangs) p(ln(row('- ' + (m.motivo || 'Sangria'), fmtBRL(m.valor ?? 0))))
+    if (sangs.length) for (const m of sangs) p(ln(row('- ' + (L(m?.motivo, 28) || 'Sangria'), fmtBRL(m?.valor ?? 0))))
     else p(ln('Nenhum'))
     p(ln(row('Total sangrias:', '-' + fmtBRL(rawData.totalSangrias ?? 0))))
+
+    // Descontos da sessão — informativo, FORA do saldo esperado. Some sem desconto.
+    const desc = rawData.descontos
+    if (desc && typeof desc === 'object' && Number(desc.total) > 0) {
+      p(ln('-'.repeat(cols)))
+      p(BOLD_ON, ln('DESCONTOS DA SESSAO'), ESC_INIT)
+      if (Number(desc.manual?.total) > 0) p(ln(row(`Manual (${Number(desc.manual.pedidos) || 0} ped):`, '-' + fmtBRL(desc.manual.total))))
+      if (Number(desc.cupom?.total) > 0) {
+        p(ln(row(`Cupom (${Number(desc.cupom.pedidos) || 0} ped):`, '-' + fmtBRL(desc.cupom.total))))
+        for (const c of (Array.isArray(desc.cupom.codigos) ? desc.cupom.codigos : [])) {
+          p(ln(row(`  ${L(c?.codigo, 24)} x${Number(c?.usos) || 0}`, '-' + fmtBRL(c?.total ?? 0))))
+        }
+      }
+      p(BOLD_ON, ln(row('TOTAL DESCONTOS:', '-' + fmtBRL(desc.total))), ESC_INIT)
+      const cf = desc.conferencia
+      if (cf && typeof cf === 'object') {
+        p(ln(row('Bruto (itens):', fmtBRL(cf.bruto ?? 0))))
+        p(ln(row('(-) Descontos:', fmtBRL(cf.descontos ?? 0))))
+        if (Number(cf.taxaServico) > 0) p(ln(row('(+) Taxa servico:', fmtBRL(cf.taxaServico))))
+        if (Number(cf.couvert) > 0)     p(ln(row('(+) Couvert:', fmtBRL(cf.couvert))))
+        if (Number(cf.frete) > 0)       p(ln(row('(+) Entrega:', fmtBRL(cf.frete))))
+        p(ln(row('(=) Cobrado:', fmtBRL(cf.cobrado ?? 0))))
+      }
+      const lista = Array.isArray(desc.pedidos) ? desc.pedidos : []
+      for (const l of lista.slice(0, MAX_DESCONTOS_IMPRESSOS)) {
+        p(ln(L(`#${L(l?.pedido, 12)} ${L(l?.canal, 24)} ${L(l?.hora, 5)}`, cols)))
+        const quem = `${l?.cupomCodigo ? L(l.cupomCodigo, 24) + ' ' : ''}${L(l?.operador, 24)}`
+        p(ln(row('  ' + quem, '-' + fmtBRL((Number(l?.desconto) || 0) + (Number(l?.cupom) || 0)))))
+      }
+      const omitidos = Math.max(0, lista.length - MAX_DESCONTOS_IMPRESSOS) + (Number(desc.pedidosOmitidos) || 0)
+      if (omitidos > 0) p(ln(`... e mais ${omitidos} pedidos`))
+    }
 
     // Saldo
     p(eq())
     p(BOLD_ON, ln(row('SALDO ESPERADO:', fmtBRL(rawData.saldoEsperado ?? 0))), ESC_INIT)
     if (rawData.valorFechamento != null) {
-      p(ln(row('Valor no fechamento:', fmtBRL(rawData.valorFechamento))))
+      p(ln(row('Valor contado:', fmtBRL(rawData.valorFechamento))))
       const dif = rawData.diferenca != null ? rawData.diferenca : (rawData.valorFechamento - (rawData.saldoEsperado ?? 0))
       const sinal = dif > 0 ? '+' : ''
       p(BOLD_ON, ln(row('DIFERENCA:', sinal + fmtBRL(dif))), ESC_INIT)
@@ -1347,7 +1421,7 @@ function buildReceiptBuffer(rawData, cols) {
   const customerOnly = rawData._customerOnly === true
   console.log('[CLIENTE-DEBUG] builder | type:', rawData.type ?? '?', '| serviceType:', data.serviceType, '| isDelivery:', isDelivery, '| isReceipt:', isReceipt, '| customerOnly:', customerOnly, '| _via:', rawData._via ?? '(sem)', '| _kitchenOnly:', rawData._kitchenOnly === true)
   if (customerOnly) console.log('[reprint] via cliente | type:', rawData.type ?? '?', '| isDelivery:', isDelivery, '| builder:', isDelivery ? 'buildClientVia' : isReceipt ? 'buildPaymentVia' : 'buildPaymentVia')
-  if (rawData.type === 'caixa') return concat(buildCaixaVia())
+  if (rawData.type === 'caixa' || rawData.type === 'fechamento-caixa') return concat(buildCaixaVia())
   // Etiqueta de retirada: via ADICIONAL enfileirada pelo backend no order:new.
   // Tem prioridade sobre os demais templates e nunca imprime comanda/comprovante.
   if (rawData.type === 'viaClienteRetirada' || rawData._printType === 'viaClienteRetirada') {
@@ -1608,4 +1682,4 @@ function getSerialPorts() {
 function getActiveProfile() { return _activeProfile }
 function getActiveColumns() { return COLS }
 
-module.exports = { printCupom, printReceipt, printTestCupom, getPrinters, getSerialPorts, setPrintParams, setActiveProfile, getActiveProfile, getActiveColumns, buildReceiptBuffer }
+module.exports = { limpoTexto, printCupom, printReceipt, printTestCupom, getPrinters, getSerialPorts, setPrintParams, setActiveProfile, getActiveProfile, getActiveColumns, buildReceiptBuffer }
