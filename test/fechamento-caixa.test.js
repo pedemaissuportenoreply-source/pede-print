@@ -51,7 +51,8 @@ test('snapshot 80mm com descontos (manual, cupom com código, conferência)', ()
     fs.mkdirSync(path.dirname(SNAP), { recursive: true })
     fs.writeFileSync(SNAP, texto)
   }
-  assert.strictEqual(texto, fs.readFileSync(SNAP, 'latin1'))
+  // O checkout pode trazer o fixture com CRLF (core.autocrlf).
+  assert.strictEqual(texto, fs.readFileSync(SNAP, 'latin1').replace(/\r\n/g, '\n'))
   for (const trecho of ['FECHAMENTO DE CAIXA', 'VENDAS POR ATENDIMENTO', 'Balcao (2):', 'DESCONTOS DA SESSAO',
     'QATESTE10 x1', '(=) Cobrado:', 'SALDO ESPERADO:', 'Valor contado:', 'DIFERENCA:', 'Troco', 'Banco']) {
     assert.ok(texto.includes(trecho), trecho)
