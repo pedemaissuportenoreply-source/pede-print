@@ -1,6 +1,6 @@
 {
   "name": "pede-print",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "Agente de impressão automática para o Pede+",
   "author": "Pede+ <jnrodrigues38@gmail.com>",
   "main": "main.js",
@@ -14,7 +14,8 @@
     "dist": "electron-builder --win --x64 --publish never",
     "publish": "electron-builder --win --x64 --publish always",
     "postinstall": "npx electron-rebuild -f -w @thiagoelg/node-printer -- --msvs_version=2022",
-    "rebuild": "npx electron-rebuild -f -w @thiagoelg/node-printer -- --msvs_version=2022"
+    "rebuild": "npx electron-rebuild -f -w @thiagoelg/node-printer -- --msvs_version=2022",
+    "gen-tray-icons": "node scripts/gen-tray-icons.js"
   },
   "dependencies": {
     "@thiagoelg/node-printer": "^0.6.2",
@@ -45,6 +46,7 @@
       "*.js",
       "!test-*.js",
       "src/**",
+      "assets/**",
       "renderer/**",
       "!renderer/_legacy/**"
     ],

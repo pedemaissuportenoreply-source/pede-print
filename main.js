@@ -8,7 +8,7 @@ const store = new Store()
 const { createSocket, reconnect: reconnectSocket, cleanup: cleanupSocket, emitToServer, validateKey } = require('./socket')
 const { openConfigWindow, getConfigWindow, hideConfigWindow } = require('./config-window')
 const { showKitchenPrompt } = require('./kitchen-prompt')
-const { initUpdater, checkForUpdatesNow } = require('./updater')
+const updater = require('./updater')
 const routing = require('./printer-routing')
 const queue = require('./print-queue')
 const defaults = require('./config-defaults')
@@ -76,7 +76,22 @@ const STATUS_LABEL = {
   disconnected: 'Desconectado',
 }
 
+// Ícone da bandeja = logo do atalho + bolinha de estado (assets/tray, gerados
+// por scripts/gen-tray-icons.js; o @2x é resolvido pelo nativeImage). Se o PNG
+// não carregar, cai no quadrado em memória — nunca bandeja sem ícone.
+const _trayIconCache = {}
 function makeTrayIcon(status) {
+  const st = STATUS_LABEL[status] ? status : 'disconnected'
+  if (!_trayIconCache[st]) {
+    try {
+      const img = nativeImage.createFromPath(path.join(__dirname, 'assets', 'tray', `tray-${st}.png`))
+      if (!img.isEmpty()) _trayIconCache[st] = img
+    } catch (e) { console.warn('[tray] ícone não carregou:', e?.message || e) }
+  }
+  return _trayIconCache[st] || _fallbackTrayIcon(st)
+}
+
+function _fallbackTrayIcon(status) {
   const size = 16
   const buf = Buffer.alloc(size * size * 4)
   const [r, g, b] = status === 'connected'    ? [0xFF, 0x6B, 0x00]
@@ -95,7 +110,10 @@ function makeTrayIcon(status) {
 function buildTrayMenu() {
   const statusLabel = '● ' + (STATUS_LABEL[currentStatus] || 'Desconectado')
   const cfg = store.get('config') || {}
-  const items = [{ label: `Pede+ Print  —  ${statusLabel}`, enabled: false }]
+  const items = [
+    { label: `Pede+ Print  —  ${statusLabel}`, enabled: false },
+    { label: `Versão ${app.getVersion()}`, enabled: false },
+  ]
   // Conta conectada SEMPRE visível na bandeja: sem isso não dava para saber em
   // qual estabelecimento este computador está pareado.
   const quem = cfg.estabelecimento || cfg.tenantName
@@ -125,7 +143,7 @@ function buildTrayMenu() {
     { label: cfg.apiKey ? 'Abrir' : 'Configurar', click: () => openConfigWindow() },
     { label: 'Reconectar',    click: () => startSocket() },
     { label: 'Trocar conta',  click: () => { openConfigWindow(); void trocarConta() } },
-    { label: 'Verificar atualizações', click: () => checkForUpdatesNow() },
+    { label: 'Verificar atualizações', click: () => updater.checkForUpdatesNow() },
   )
   // Espelha o estado REAL do registro do Windows: se desligarem por fora
   // (Gerenciador de Tarefas), a marca some aqui também.
@@ -149,7 +167,8 @@ function refreshTray() {
   const cfg = store.get('config') || {}
   const who = cfg.tenantName ? ` · ${cfg.tenantName}` : ''
   tray.setImage(makeTrayIcon(currentStatus))
-  tray.setToolTip(`Pede+ Print — ${STATUS_LABEL[currentStatus] || 'Desconectado'}${who}`)
+  const upd = updater.isDownloading() ? ' · atualizando…' : ''
+  tray.setToolTip(`Pede+ Print — ${STATUS_LABEL[currentStatus] || 'Desconectado'}${who}${upd}`)
   tray.setContextMenu(buildTrayMenu())
 }
 
@@ -178,6 +197,7 @@ function handleStatusChange(status) {
   refreshTray()
   // Reconectou: boa hora pra tentar drenar o que ficou pendente offline.
   if (status === 'connected' && antes !== 'connected') void drainPending('reconexão')
+  if (status === 'connected' && antes === 'reconnecting') updater.onReconnected()
   const win = getConfigWindow()
   if (win && !win.isDestroyed()) {
     win.webContents.send('status-changed', status)
@@ -520,14 +540,26 @@ function _enqueuePending(routed, enriched, data, setor, dedup) {
 async function _printLegacy(enriched, data, config, setor) {
   const { printCupom } = require('./printer')
   const legacyTarget = _printerTarget(config)
+  _printingJobs++
   try {
     return await printCupom(enriched, legacyTarget, _cols(data, config), _printOpts(config))
   } catch (err) {
     throw _enrichPrintError(err, { setor, label: config.printerName || legacyTarget, target: legacyTarget, deviceKey: null })
+  } finally {
+    _printingJobs--
   }
 }
 
-async function _printOne(routed, enriched, data, config, setor) {
+// Jobs com escrita na impressora em andamento agora — o updater só aplica com 0.
+let _printingJobs = 0
+function isPrinting() { return _printingJobs > 0 || _draining }
+
+async function _printOne(...args) {
+  _printingJobs++
+  try { return await _printOneInner(...args) } finally { _printingJobs-- }
+}
+
+async function _printOneInner(routed, enriched, data, config, setor) {
   const { printCupom } = require('./printer')
   // Per-impressora manda: tenant > perfil/override do card > default.
   const cols = data._receiptOpts?.larguraColunas
@@ -723,7 +755,21 @@ function _kitchenInfo(data) {
   return parts.join(' • ')
 }
 
+// Último pedido/recibo recebido: o updater espera 90s de calmaria antes de aplicar.
+let _lastPrintEventAt = 0
+const UPDATE_QUIET_MS = 90 * 1000
+
+// Ocioso o bastante p/ reiniciar: nada imprimindo, fila vazia e nenhum popup de
+// cozinha aberto (o popup não sobrevive ao restart).
+function _updateIdle() {
+  return !isPrinting() && !queue.hasPending() && _pendingKitchen.size === 0
+}
+function _updateSafe() {
+  return _updateIdle() && Date.now() - _lastPrintEventAt >= UPDATE_QUIET_MS
+}
+
 function handlePrintEvent(event, data) {
+  if (event === 'receipt:print' || event === 'novo_pedido' || event === 'novo_pedido_cozinha') _lastPrintEventAt = Date.now()
   console.log('[handlePrintEvent] evento:', event, '| id:', data?.id ?? data?.numeroPedido ?? '?', '| code:', data?.code ?? data?.orderCode ?? '?')
   const config = effectiveConfig()
   console.log('[handlePrintEvent] config.printerName:', config.printerName ?? '(não configurado)')
@@ -1206,11 +1252,15 @@ app.whenReady().then(async () => {
 
   // Subiu pelo login do Windows? Então vai direto pra bandeja: o caixa liga o PC
   // e não pode ganhar uma janela na cara.
-  const bootHidden = autostart.startedHidden()
+  // Relançado pelo instalador silencioso do auto-update (vem sem --hidden):
+  // sobe oculto do mesmo jeito e avisa a versão nova.
+  const relaunch = updater.consumeRelaunch(store)
+  const bootHidden = autostart.startedHidden() || !!relaunch
   // Ligado por padrão na primeira execução; depois disso só reconcilia o que o
   // usuário escolheu (idempotente — não reescreve o registro se já estiver certo).
   autostart.sync(store)
-  console.log('[main] boot | hidden:', bootHidden, '| autostart:', autostart.isEnabled())
+  console.log('[main] boot | hidden:', bootHidden, '| autostart:', autostart.isEnabled(), '| pós-update:', relaunch ? relaunch.version : 'não')
+  if (relaunch) updater.notify('Pede+ Print', `Pede+ Print atualizado para v${app.getVersion()}`)
 
   tray = new Tray(makeTrayIcon('disconnected'))
   tray.setToolTip('Pede+ Print')
@@ -1237,7 +1287,14 @@ app.whenReady().then(async () => {
   startPendingWatcher()
   void drainPending('boot')
 
-  initUpdater() // auto-update (no-op em dev/unpackaged)
+  // Auto-update (no-op em dev/unpackaged): aplica sozinho quando ocioso.
+  updater.initUpdater({
+    store,
+    isSafe: _updateSafe,
+    isIdle: _updateIdle,
+    beforeQuit: () => cleanupSocket(),
+    onStateChange: () => refreshTray(),
+  })
 })
 
 app.on('window-all-closed', (e) => e.preventDefault())

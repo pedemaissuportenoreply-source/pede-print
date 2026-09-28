@@ -11,6 +11,7 @@ function showKitchenPrompt({ token, code, info }) {
     width: 440,
     height: 300,
     title: 'Pede+ Print',
+    icon: path.join(__dirname, 'assets', 'app-icon.ico'),
     resizable: false,
     minimizable: false,
     maximizable: false,

@@ -17,6 +17,7 @@ function openConfigWindow() {
     width:      540,
     height:     720,
     title:      'Pede+ Print',
+    icon:       path.join(__dirname, 'assets', 'app-icon.ico'),
     resizable:  false,
     minimizable: true,
     maximizable: false,
