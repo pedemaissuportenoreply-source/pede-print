@@ -124,7 +124,27 @@ const FEED_CUT = Buffer.from('\n'.repeat(4), 'ascii')
 // Texto codificado no ENCODING do perfil ativo (iconv), casado com o ESC t n do
 // mesmo perfil (charset da ROM) — par verificado p/ acentos PT-BR corretos. Ex.:
 // Daruma DR800 = cp860 + ESC t 3 (cp1252 + ESC t 7 mangla; ver printer-profiles.js).
-function ln(text) { return iconv.encode(String(text) + '\n', ENCODING) }
+function ln(text) { return iconv.encode(textoVia(text) + '\n', ENCODING) }
+
+// Vias de PREPARO (cozinha/bar) saem em ASCII puro: a impressora da cozinha nem
+// sempre está na codepage certa, e um byte de acento fora dela CORTAVA o resto
+// da palavra ("+ Macarrão" saía "+ Macarr"). Transliterar troca 1 letra por 1
+// letra (ã→a, ç→c, à→a) — a largura da linha e a quebra continuam as mesmas.
+// Comprovante/recibo seguem com acento (codepage do perfil).
+let _viaAscii = false
+function textoVia(text) {
+  const s = String(text)
+  return _viaAscii ? semAcento(s) : s
+}
+function semAcento(v) {
+  return String(v ?? '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[ºª°]/g, (c) => (c === 'ª' ? 'a' : 'o'))
+    .replace(/[“”«»]/g, '"').replace(/[‘’´`]/g, "'").replace(/[–—]/g, '-').replace(/…/g, '...')
+    .replace(/ß/g, 'ss').replace(/[Ææ]/g, (c) => (c === 'Æ' ? 'AE' : 'ae')).replace(/[Øø]/g, (c) => (c === 'Ø' ? 'O' : 'o'))
+    // eslint-disable-next-line no-control-regex
+    .replace(/[^\x00-\x7e]/g, '')
+}
 
 // ── Formatters ─────────────────────────────────────────────────────────────────
 
@@ -398,6 +418,55 @@ function normalizePayload(data) {
   }
 }
 
+// ── Cabeçalho das vias de preparo ─────────────────────────────────────────────
+// UMA função para a via da COZINHA e a do BAR (SERVIR não imprime). Fonte:
+// `cabecalhoVia` montado pelo backend a partir do PEDIDO. Payload antigo (sem o
+// campo): deriva do canal real — nunca do `type` do template ('kitchen') e sem
+// cair em MESA quando o pedido não é de mesa.
+const CANAL_VIA = {
+  DELIVERY: 'DELIVERY', RETIRADA: 'RETIRADA', PICKUP: 'RETIRADA', COMANDA: 'COMANDA',
+  MESA: 'MESA', MESA_QR: 'MESA', QR: 'MESA', TABLE: 'MESA',
+  BALCAO: 'BALCAO', COUNTER: 'BALCAO', CONSUMO_LOCAL: 'BALCAO',
+}
+const ROTULO_VIA = { MESA: 'MESA', COMANDA: 'COMANDA', BALCAO: 'BALCAO', DELIVERY: 'DELIVERY', RETIRADA: 'RETIRADA' }
+
+function cabecalhoDaVia(rawData, data) {
+  const c = rawData && rawData.cabecalhoVia
+  if (c && typeof c === 'object' && c.destino) {
+    return {
+      numero: String(c.numero || data.orderCode || '?'),
+      destino: limpoTexto(c.destino, 60).toUpperCase(),
+      tipo: limpoTexto(c.tipo || c.canal || '', 20).toUpperCase(),
+      cliente: c.cliente ? limpoTexto(c.cliente, 60) : null,
+      criadoEm: c.criadoEm || data.createdAt,
+    }
+  }
+  const chave = (v) => String(v ?? '').trim().toUpperCase().replace(/s+/g, '_')
+  let canal = null
+  for (const v of [rawData.serviceType, rawData.tipoAtendimento, rawData.type, rawData.tipo, rawData.modalidade]) {
+    canal = CANAL_VIA[chave(v)]
+    if (canal) break
+  }
+  if (!canal) canal = data.table ? 'MESA' : 'BALCAO'
+  const nome = data.customer ? limpoTexto(data.customer, 60) : null
+  let destino
+  let cliente = nome
+  if (canal === 'MESA') {
+    destino = data.table ? (/^mesa/i.test(String(data.table)) ? String(data.table) : 'MESA ' + data.table) : 'MESA'
+    destino = destino.toUpperCase()
+    if (nome && nome.toUpperCase() === destino) cliente = null
+  } else if (canal === 'COMANDA') {
+    destino = ('COMANDA ' + ((nome || '').replace(/^comandas*/i, '').trim() || data.orderCode)).toUpperCase()
+    cliente = null
+  } else if (canal === 'DELIVERY' || canal === 'RETIRADA') {
+    destino = nome ? canal + ' - ' + nome.toUpperCase() : canal
+    cliente = null
+  } else {
+    destino = 'BALCAO'
+  }
+  return { numero: String(data.orderCode || '?'), destino, tipo: ROTULO_VIA[canal], cliente, criadoEm: data.createdAt }
+}
+
 // ── Receipt builder ────────────────────────────────────────────────────────────
 
 function buildReceiptBuffer(rawData, cols) {
@@ -449,25 +518,22 @@ function buildReceiptBuffer(rawData, cols) {
   }
 
   const isDelivery = data.serviceType === 'DELIVERY'
-  const isBalcao   = data.serviceType === 'BALCAO'
-  const pedido     = 'PEDIDO #' + (data.orderCode || '?')
   const { date, time } = fmtDateParts(data.createdAt)
   const da = (typeof rawData.deliveryAddress === 'object' && rawData.deliveryAddress) || {}
 
-  let destino
-  if (isDelivery) {
-    destino = 'DELIVERY - ' + String(data.customer || '').toUpperCase()
-  } else if (isBalcao) {
-    destino = 'BALCAO'
-  } else {
-    const t = data.table ? (/^mesa/i.test(String(data.table)) ? data.table : 'MESA ' + data.table) : 'MESA'
-    destino = String(t).toUpperCase()
-  }
+  // Cabeçalho das vias de preparo (cozinha e bar): uma fonte só, do pedido.
+  const cab = cabecalhoDaVia(rawData, data)
+  const pedido     = 'PEDIDO #' + cab.numero
+  const destino = cab.destino
 
   // ── VIA COZINHA ───────────────────────────────────────────────────────────────
   // Flags do tenant (config Comprovantes → _receiptOpts). Defaults reproduzem o
   // comportamento histórico: sem preços, com horário/cliente, obs destacada, corte.
   function buildKitchenVia() {
+    _viaAscii = true
+    try { return montarKitchenVia() } finally { _viaAscii = false }
+  }
+  function montarKitchenVia() {
     const opts = rawData._receiptOpts || {}
     const showPrices  = opts.ocultarPrecos === false   // default: oculta (true)
     const showHora    = opts.exibirHorario !== false
@@ -505,7 +571,7 @@ function buildReceiptBuffer(rawData, cols) {
       // Barra reversa borda a borda (mesmo pad full-width do bloco PEDIDO/MESA) +
       // item emoldurado ('+---+' / '|') pra destacar na cozinha.
       const framed = item.brinde === true
-      const raw = (s) => iconv.encode(String(s), ENCODING) // trecho de linha, sem \n
+      const raw = (s) => iconv.encode(textoVia(s), ENCODING) // trecho de linha, sem \n
       // fonts = buffers de estilo do miolo; bigWidth = miolo em dupla-largura.
       // Bordas '|' sempre em fonte normal; a soma dá `cols` colunas exatas.
       const emitLine = (fonts, text, bigWidth) => {
@@ -592,13 +658,13 @@ function buildReceiptBuffer(rawData, cols) {
         if (destaque) p(BOLD_ON, ...ctrBig(destaque), ESC_INIT)
         p(eq())
       }
-      if (data.customer && !isDelivery && showCliente) p(ln('Cliente: ' + String(data.customer).slice(0, cols - 9)))
-      const tipoLabel = isDelivery ? 'DELIVERY' : isBalcao ? 'BALCAO' : 'MESA'
+      if (cab.cliente && showCliente) p(ln('Cliente: ' + String(cab.cliente).slice(0, cols - 9)))
+      const { date: dataVia, time: horaVia } = fmtDateParts(cab.criadoEm)
       if (showHora) {
-        p(ln(row('Tipo: ' + tipoLabel, 'Hora: ' + time)))
-        p(ln('Data: ' + date))
+        p(ln(row('Tipo: ' + cab.tipo, 'Hora: ' + horaVia)))
+        p(ln('Data: ' + dataVia))
       } else {
-        p(ln('Tipo: ' + tipoLabel))
+        p(ln('Tipo: ' + cab.tipo))
       }
       p(eq())
     }
@@ -1682,4 +1748,4 @@ function getSerialPorts() {
 function getActiveProfile() { return _activeProfile }
 function getActiveColumns() { return COLS }
 
-module.exports = { limpoTexto, printCupom, printReceipt, printTestCupom, getPrinters, getSerialPorts, setPrintParams, setActiveProfile, getActiveProfile, getActiveColumns, buildReceiptBuffer }
+module.exports = { semAcento, cabecalhoDaVia, limpoTexto, printCupom, printReceipt, printTestCupom, getPrinters, getSerialPorts, setPrintParams, setActiveProfile, getActiveProfile, getActiveColumns, buildReceiptBuffer }
