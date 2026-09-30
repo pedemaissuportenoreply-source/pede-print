@@ -334,6 +334,8 @@ function normalizePayload(data) {
       pricePerKg,
       // Meio a meio (max 2 sabores) — campos do DTO 6A repassados ao builder.
       brinde:       item.brinde === true,
+      // Pedido ALTERADO: 'NOVO' | 'ALTERADO' | 'REMOVIDO' (backend decide).
+      marca:        ['NOVO', 'ALTERADO', 'REMOVIDO'].includes(item.marca) ? item.marca : null,
       meioAMeio:    item.meioAMeio ?? item.meio_a_meio ?? false,
       sabor1Nome:   item.sabor1Nome ?? item.sabor1_nome ?? null,
       sabor2Nome:   item.sabor2Nome ?? item.sabor2_nome ?? null,
@@ -414,6 +416,8 @@ function normalizePayload(data) {
     // ALLOWLIST: campo fora dela nunca chega ao builder — era por isso que a via
     // do bar saia com o cabecalho 'VIA COZINHA' mesmo com o backend mandando.
     viaTitulo:     data.viaTitulo     ?? null,
+    // Via de pedido ALTERADO (edição pela KDS): titulo, horario e totais do backend.
+    alteracao:     data.alteracao && typeof data.alteracao === 'object' ? data.alteracao : null,
     items,
   }
 }
@@ -526,6 +530,16 @@ function buildReceiptBuffer(rawData, cols) {
   const pedido     = 'PEDIDO #' + cab.numero
   const destino = cab.destino
 
+  // Pedido ALTERADO: rótulo ASCII da marca do item e linha de horário da alteração.
+  const MARCA_TXT = { NOVO: '+NOVO', ALTERADO: 'ALTERADO', REMOVIDO: '-REMOVIDO' }
+  const marcaTxt = (item) => (item && item.marca ? MARCA_TXT[item.marca] || null : null)
+  const alt = data.alteracao
+  const altQuando = () => {
+    if (!alt || !alt.alteradoEm) return null
+    const { date: d, time: t } = fmtDateParts(alt.alteradoEm)
+    return 'Alterado em ' + d + (t ? ' ' + t : '')
+  }
+
   // ── VIA COZINHA ───────────────────────────────────────────────────────────────
   // Flags do tenant (config Comprovantes → _receiptOpts). Defaults reproduzem o
   // comportamento histórico: sem preços, com horário/cliente, obs destacada, corte.
@@ -562,6 +576,7 @@ function buildReceiptBuffer(rawData, cols) {
         lastCombo = null
       }
       const comboIndent = item.comboNome ? '  ' : ''
+      if (marcaTxt(item)) p(BOLD_ON, ln(comboIndent + '>>> ' + marcaTxt(item) + ' <<<'), ESC_INIT)
       // Caixinha p/ a cozinha marcar à caneta quando o item ficar pronto. SÓ no
       // item principal (normal/meio-a-meio/brinde) — complementos "+" não recebem.
       // Entra no prefix, então `indent` alinha as continuações sob o nome.
@@ -632,6 +647,12 @@ function buildReceiptBuffer(rawData, cols) {
       // Sem o campo (payload antigo) segue 'VIA COZINHA'.
       p(BOLD_ON, ...ctrBig(String(data.viaTitulo || 'VIA COZINHA')))
       p(eq())
+      if (alt) {
+        p(BOLD_ON, ln(ctr(String(alt.titulo || 'PEDIDO ALTERADO'))), ESC_INIT)
+        if (altQuando()) p(ln(ctr(altQuando())))
+        if (alt.observacaoPedido) for (const l of wrap('OBS PEDIDO: ' + String(alt.observacaoPedido), cols)) p(BOLD_ON, ln(l), ESC_INIT)
+        p(eq())
+      }
       // Bloco do pedido: UM retângulo preto contínuo. GS B liga UMA vez, cada
       // linha é padded até a largura total (borda a borda), o \n sai com o
       // reverso ainda ligado e ESC 3 24 elimina a faixa branca entre linhas.
@@ -749,6 +770,10 @@ function buildReceiptBuffer(rawData, cols) {
 
     // 2) PEDIDO + ENTREGA (emoldurados, dupla-altura + bold)
     framedTB('PEDIDO #' + (data.orderCode || '?'))
+    if (alt) {
+      framedTB(String(alt.titulo || 'PEDIDO ALTERADO'))
+      if (altQuando()) p(ln(ctr(altQuando())))
+    }
     // TIPO + DATA/HORA do pedido (condicional, null-safe)
     if (data.serviceType) p(ln(ctr(String(data.serviceType))))
     if (date) p(ln(ctr(date + (time ? ' - ' + time : ''))))
@@ -800,7 +825,7 @@ function buildReceiptBuffer(rawData, cols) {
       const isBrinde = item.brinde === true
       return {
         qty:    String(item.qty ?? 1) + 'x',
-        name:   (isBrinde ? 'BRINDE - ' : '') + String(itemDisplayName(item) ?? '').toUpperCase(),
+        name:   (marcaTxt(item) ? marcaTxt(item) + ' ' : '') + (isBrinde ? 'BRINDE - ' : '') + String(itemDisplayName(item) ?? '').toUpperCase(),
         unit:   isBrinde ? fmtBRL(0) : (unitV != null ? fmtBRL(unitV) : ''),
         total:  isBrinde ? fmtBRL(0) : (item.subtotal != null ? fmtBRL(item.subtotal) : ''),
         obs:    item.obs,
@@ -870,6 +895,16 @@ function buildReceiptBuffer(rawData, cols) {
     }
     if (dlvHasServ) framedRowTB('TOTAL C/ SERVICO:', fmtBRL(dlvTotalLiquido + Number(dlvServ)))
     else framedRowTB('TOTAL:', fmtBRL(dlvTotalLiquido))
+    if (alt) {
+      if (alt.totalAnterior != null) p(ln(row('Total anterior:', fmtBRL(alt.totalAnterior))))
+      // Com `pagamentoPendente` a cobrança sai no bloco de pagamento (sem duplicar).
+      if (Number(alt.diferencaAReceber) > 0 && !rawData.pagamentoPendente) {
+        framedRowTB('COBRAR NA ENTREGA:', fmtBRL(alt.diferencaAReceber))
+        if (alt.diferencaFormaPagamento) p(BOLD_ON, ln(ctr('Diferenca em ' + String(alt.diferencaFormaPagamento).toUpperCase())), ESC_INIT)
+      }
+      if (Number(alt.valorADevolver) > 0) framedRowTB('A DEVOLVER:', fmtBRL(alt.valorADevolver))
+      if (alt.observacaoPedido) for (const l of wrap('Obs: ' + String(alt.observacaoPedido), cols)) p(ln(l))
+    }
     if (dlvDescTotal > 0) p(ln(ctr('Voce economizou ' + fmtBRL(dlvDescTotal) + dlvCupomTag)))
 
     // 7) PAGAMENTO — bloco EMOLDURADO (separador "===" full-width, texto centrado
@@ -887,16 +922,42 @@ function buildReceiptBuffer(rawData, cols) {
     // Linha de troco só faz sentido em DINHEIRO.
     const trocoTxt = isCash ? (needsChange ? 'TROCO PARA ' + fmtBRL(trocoPara) : 'NAO PRECISA TROCO') : null
 
+    // Pago online + pedido alterado para mais: o backend manda `pagamentoPendente`
+    // (valores do servidor). Troca o "PAGO / FORMA" por já pago + a cobrar.
+    const pend = rawData.pagamentoPendente && typeof rawData.pagamentoPendente === 'object' ? rawData.pagamentoPendente : null
+    const pendValor = pend ? Number(pend.valorPendente) : 0
+
     blank()
-    p(eq())
-    p(BOLD_ON, TALL_ON, ln(ctr(statusTxt)), ESC_INIT)
-    if (formaTxt) p(BOLD_ON, ln(ctr(formaTxt)), ESC_INIT)
-    if (trocoTxt) p(BOLD_ON, ln(ctr(trocoTxt)), ESC_INIT)
-    p(eq())
-    blank()
+    if (pend && pendValor > 0) {
+      const up = (s) => semAcento(String(s || '')).toUpperCase()
+      const onlineTag = pend.formaOnlineLabel ? ' (' + up(pend.formaOnlineLabel).replace(/\s*ONLINE$/, '') + ')' : ''
+      p(eq())
+      p(BOLD_ON, ln(row('TOTAL:', fmtBRL(pend.total))), ESC_INIT)
+      p(ln(row('PAGO ONLINE' + onlineTag + ':', fmtBRL(pend.pagoOnline))))
+      p(ln('-'.repeat(cols)))
+      p(BOLD_ON, TALL_ON, ln(row('A COBRAR NA ENTREGA:', fmtBRL(pendValor))), ESC_INIT)
+      if (pend.formaLabel || pend.forma) p(BOLD_ON, ln('FORMA: ' + up(pend.formaLabel || pend.forma)), ESC_INIT)
+      if (pend.forma === 'dinheiro') {
+        if (Number(pend.trocoPara) > 0) {
+          p(BOLD_ON, ln(row('TROCO PARA:', fmtBRL(pend.trocoPara))), ESC_INIT)
+          p(BOLD_ON, ln(row('TROCO:', fmtBRL(pend.troco ?? 0))), ESC_INIT)
+        } else {
+          p(BOLD_ON, ln(row('TROCO:', 'NAO PRECISA')), ESC_INIT)
+        }
+      }
+      p(eq())
+      blank()
+    } else {
+      p(eq())
+      p(BOLD_ON, TALL_ON, ln(ctr(statusTxt)), ESC_INIT)
+      if (formaTxt) p(BOLD_ON, ln(ctr(formaTxt)), ESC_INIT)
+      if (trocoTxt) p(BOLD_ON, ln(ctr(trocoTxt)), ESC_INIT)
+      p(eq())
+      blank()
+    }
 
     // TROCO A LEVAR (valor que o entregador devolve) — mantido abaixo do bloco.
-    if (isCash && needsChange) {
+    if (!pend && isCash && needsChange) {
       const totalFinalDlv = dlvHasServ ? dlvTotalLiquido + Number(dlvServ) : dlvTotalLiquido
       framedRowTB('TROCO A LEVAR:', fmtBRL(Math.max(0, trocoPara - totalFinalDlv)))
     }
