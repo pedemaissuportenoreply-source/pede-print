@@ -473,6 +473,24 @@ function cabecalhoDaVia(rawData, data) {
 
 // ── Receipt builder ────────────────────────────────────────────────────────────
 
+// QR Code nativo ESC/POS — GS ( k, modelo 2, correção M, centralizado.
+// Usado pelo DANFE NFC-e (URL do QR vem pronta da SEFAZ via backend).
+function qrEscPos(texto, modulo = 5) {
+  const dados = Buffer.from(String(texto), 'latin1')
+  const len = dados.length + 3
+  return Buffer.concat([
+    Buffer.from([0x1b, 0x61, 0x01]),                                     // ESC a 1 — centro
+    Buffer.from([0x1d, 0x28, 0x6b, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00]), // modelo 2
+    Buffer.from([0x1d, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x43, modulo]),     // tamanho do módulo
+    Buffer.from([0x1d, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x45, 0x31]),       // correção M
+    Buffer.from([0x1d, 0x28, 0x6b, len & 0xff, (len >> 8) & 0xff, 0x31, 0x50, 0x30]),
+    dados,                                                                // armazena
+    Buffer.from([0x1d, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x51, 0x30]),       // imprime
+    Buffer.from('\n', 'ascii'),
+    Buffer.from([0x1b, 0x61, 0x00]),                                     // ESC a 0 — esquerda
+  ])
+}
+
 function buildReceiptBuffer(rawData, cols) {
   const data = normalizePayload(rawData)
   // Logo só existe quando habilitado e já convertido (apenas comprovante de pagamento)
@@ -1537,8 +1555,79 @@ function buildReceiptBuffer(rawData, cols) {
     return b
   }
 
+  // ── DANFE NFC-e simplificado ──────────────────────────────────────────────
+  // Job 'nfce' SÓ por ação explícita (botão "Imprimir NFC-e"); nunca vem do
+  // order:new. Dados já autorizados pela SEFAZ (backend manda rawData.nfce).
+  // Codepage do perfil e noCut respeitados como nas outras vias.
+  function buildNfceVia() {
+    const b = []
+    const p = (...x) => b.push(...x)
+    const L = limpoTexto
+    const n = rawData.nfce || {}
+    const emit = n.emitente || {}
+    const cnpjFmt = (v) => {
+      const d = String(v || '').replace(/\D/g, '')
+      return d.length === 14 ? d.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5') : d
+    }
+    const TPAG = { '01': 'Dinheiro', '03': 'Cartao Credito', '04': 'Cartao Debito', '05': 'Credito Loja', '10': 'Vale Alimentacao', '11': 'Vale Refeicao', '17': 'PIX', '20': 'PIX', '99': 'Outros' }
+    p(ESC_INIT, charset())
+    p(BOLD_ON, ln(ctr(L(emit.nome || 'ESTABELECIMENTO', cols))), ESC_INIT)
+    if (emit.cnpj) p(ln(ctr('CNPJ: ' + cnpjFmt(emit.cnpj))))
+    for (const linha of wrap(L(emit.endereco || '', cols * 2), cols)) if (linha) p(ln(ctr(linha)))
+    p(eq())
+    p(ln(ctr('DANFE NFC-e - Documento Auxiliar')))
+    p(ln(ctr('da Nota Fiscal de Consumidor Eletronica')))
+    if (n.homologacao) {
+      p(eq())
+      for (const linha of wrap('EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL', cols)) p(BOLD_ON, ln(ctr(linha)), ESC_INIT)
+    }
+    p(eq())
+    // Itens: codigo descricao / qtd un x vUnit = vTotal
+    p(ln(row('# DESCRICAO', 'VALOR')))
+    ;(n.itens || []).forEach((it, i) => {
+      const desc = L(`${i + 1} ${it.codigo || ''} ${it.descricao || ''}`, cols * 2)
+      for (const linha of wrap(desc, cols)) p(ln(linha))
+      const qtd = Number(it.qtd || 0)
+      const qtdTxt = Number.isInteger(qtd) ? String(qtd) : qtd.toFixed(3).replace('.', ',')
+      p(ln(row(`  ${qtdTxt} ${L(it.un || 'UN', 6)} x ${fmtBRL(it.vUnit)}`, fmtBRL(it.vTotal))))
+    })
+    p(eq())
+    const tot = n.totais || {}
+    p(ln(row('Qtd. total de itens', String((n.itens || []).length))))
+    p(ln(row('Valor total R$', fmtBRL(tot.vProd))))
+    if (Number(tot.vDesc) > 0) p(ln(row('Descontos R$', '-' + fmtBRL(tot.vDesc))))
+    if (Number(tot.vOutro) > 0) p(ln(row('Acrescimos R$', fmtBRL(tot.vOutro))))
+    p(BOLD_ON, ln(row('VALOR A PAGAR R$', fmtBRL(tot.vNF))), ESC_INIT)
+    p(ln(row('FORMA PAGAMENTO', 'VALOR PAGO R$')))
+    for (const pg of n.pagamentos || []) p(ln(row(TPAG[pg.tPag] || 'Outros', fmtBRL(pg.vPag))))
+    if (Number(n.vTroco) > 0) p(ln(row('Troco R$', fmtBRL(n.vTroco))))
+    p(eq())
+    p(ln(ctr('Consulte pela Chave de Acesso em')))
+    if (n.urlConsulta) for (const linha of wrap(L(n.urlConsulta, 200), cols)) p(ln(ctr(linha)))
+    if (n.chave) {
+      const blocos = String(n.chave).replace(/\D/g, '').match(/.{1,4}/g) || []
+      // 11 blocos de 4: duas linhas centralizadas.
+      p(ln(ctr(blocos.slice(0, 6).join(' '))))
+      p(ln(ctr(blocos.slice(6).join(' '))))
+    }
+    p(eq())
+    p(ln(ctr(n.consumidorCpf ? 'CONSUMIDOR CPF: ' + L(n.consumidorCpf, 20) : 'CONSUMIDOR NAO IDENTIFICADO')))
+    const emitida = fmtDateParts(n.emitidaEm)
+    p(ln(ctr(`NFC-e n ${n.numero ?? '-'} Serie ${n.serie ?? '-'} ${emitida.date} ${emitida.time}`)))
+    if (n.protocolo) p(ln(ctr('Protocolo de autorizacao: ' + L(n.protocolo, 20))))
+    if (n.qrcode) {
+      p(ln(''))
+      p(qrEscPos(String(n.qrcode)))
+    }
+    if (n.homologacao) p(ln(''), ln(ctr('SEM VALOR FISCAL')))
+    p(...brandFooter())
+    if (rawData._receiptOpts?.noCut === true) p(FEED_CUT)
+    else p(FEED_CUT, CUT)
+    return b
+  }
+
   // Comprovante de pagamento (caixa) — layout dedicado, sem cozinha
-  const isReceipt = !isDelivery && (rawData._printType === 'receipt' || rawData._via === 'cliente'
+  const isReceipt =!isDelivery && (rawData._printType === 'receipt' || rawData._via === 'cliente'
     || rawData.type === 'payment')
   // Buffer.concat nunca recebe null/undefined
   const concat = (segs) => Buffer.concat(segs.filter(Buffer.isBuffer))
@@ -1549,6 +1638,8 @@ function buildReceiptBuffer(rawData, cols) {
   console.log('[CLIENTE-DEBUG] builder | type:', rawData.type ?? '?', '| serviceType:', data.serviceType, '| isDelivery:', isDelivery, '| isReceipt:', isReceipt, '| customerOnly:', customerOnly, '| _via:', rawData._via ?? '(sem)', '| _kitchenOnly:', rawData._kitchenOnly === true)
   if (customerOnly) console.log('[reprint] via cliente | type:', rawData.type ?? '?', '| isDelivery:', isDelivery, '| builder:', isDelivery ? 'buildClientVia' : isReceipt ? 'buildPaymentVia' : 'buildPaymentVia')
   if (rawData.type === 'caixa' || rawData.type === 'fechamento-caixa') return concat(buildCaixaVia())
+  // DANFE NFC-e: template próprio, nunca o comprovante de pagamento.
+  if (rawData.type === 'nfce') return concat(buildNfceVia())
   // Etiqueta de retirada: via ADICIONAL enfileirada pelo backend no order:new.
   // Tem prioridade sobre os demais templates e nunca imprime comanda/comprovante.
   if (rawData.type === 'viaClienteRetirada' || rawData._printType === 'viaClienteRetirada') {
