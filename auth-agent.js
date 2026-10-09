@@ -65,9 +65,27 @@ function _friendlyError(status, data) {
   return msg || `Falha na conexão (HTTP ${status}).`
 }
 
-function _netError(err) {
-  if (err && err.name === 'AbortError') return 'Tempo esgotado ao falar com o servidor.'
-  return `Não foi possível conectar ao servidor: ${(err && err.message) || err}`
+// Causa legível de um erro de rede. O fetch do Node só diz "fetch failed": o
+// motivo real (código do SO/undici/TLS) vem em err.cause.
+function _netCause(err) {
+  const c = (err && err.cause) || {}
+  const code = String(c.code || (err && err.code) || '')
+  if (err && err.name === 'AbortError') return 'tempo esgotado'
+  if (code === 'ECONNREFUSED') return 'conexão recusada'
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'endereço não encontrado — verifique a internet/DNS'
+  if (code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT') return 'tempo esgotado ao conectar'
+  if (code === 'ENETUNREACH' || code === 'EHOSTUNREACH') return 'rede inalcançável'
+  if (code === 'ECONNRESET' || code === 'UND_ERR_SOCKET') return 'conexão interrompida'
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|ERR_TLS|SSL/i.test(code)) return 'erro de certificado de segurança'
+  return code || (c.message || (err && err.message) || 'erro desconhecido')
+}
+
+function _netError(err, base) {
+  let alvo = 'o servidor'
+  try { if (base) alvo = new URL(base).origin } catch { /* base inválida: texto genérico */ }
+  const c = err && err.cause
+  console.warn('[auth] falha de rede em', base || '(sem url)', '|', err && err.message, '| cause:', c && c.code, c && c.message)
+  return `Não foi possível conectar a ${alvo} (${_netCause(err)}).`
 }
 
 // ── Pareamento por CÓDIGO (caminho principal) ────────────────────────────────
@@ -92,7 +110,7 @@ async function pairWithCode(serverUrl, codigo, dispositivo) {
       codigo: code,
       dispositivo: String(dispositivo || 'Computador').slice(0, 80),
     })
-  } catch (e) { return { ok: false, message: _netError(e) } }
+  } catch (e) { return { ok: false, message: _netError(e, base) } }
 
   if (r.isHtml) return { ok: false, message: WRONG_HOST_MSG }
   if (!r.ok || !r.data || !r.data.token) {
@@ -197,7 +215,7 @@ async function login(serverUrl, email, password, fingerprint) {
       { email: mail, senha: String(password) },
       fingerprint ? { 'x-device-fingerprint': String(fingerprint) } : undefined,
     )
-  } catch (e) { return { ok: false, message: _netError(e) } }
+  } catch (e) { return { ok: false, message: _netError(e, base) } }
 
   if (r.isHtml) return { ok: false, message: WRONG_HOST_MSG }
   if (!r.ok) return { ok: false, message: _friendlyError(r.status, r.data) }
@@ -214,7 +232,7 @@ async function login(serverUrl, email, password, fingerprint) {
   }
 
   try { return await _afterTokens(serverUrl, r.data) }
-  catch (e) { return { ok: false, message: _netError(e) } }
+  catch (e) { return { ok: false, message: _netError(e, base) } }
 }
 
 // Passo 2 (só quando requiresOtp): código do e-mail + tempToken.
@@ -230,7 +248,7 @@ async function verifyOtp(serverUrl, tempToken, code, fingerprint) {
   // Corpo EXATO do VerifyOtpDto: tempToken + code + fingerprint (todos required).
   let r
   try { r = await _post(base, '/auth/verify-otp', { tempToken, code: otp, fingerprint: String(fingerprint || 'pede-print') }) }
-  catch (e) { return { ok: false, message: _netError(e) } }
+  catch (e) { return { ok: false, message: _netError(e, base) } }
 
   if (r.isHtml) return { ok: false, message: WRONG_HOST_MSG }
   if (!r.ok) {
@@ -244,7 +262,7 @@ async function verifyOtp(serverUrl, tempToken, code, fingerprint) {
     return { ok: false, message: _friendlyError(r.status, r.data) }
   }
   try { return await _afterTokens(serverUrl, r.data) }
-  catch (e) { return { ok: false, message: _netError(e) } }
+  catch (e) { return { ok: false, message: _netError(e, base) } }
 }
 
 // Reenvia o código do 2FA. Devolve o tempToken novo quando o backend rotaciona.
@@ -261,7 +279,7 @@ async function resendOtp(serverUrl, tempToken) {
     }
     return { ok: true, tempToken: (r.data && r.data.tempToken) || tempToken, message: 'Novo código enviado.' }
   } catch (e) {
-    return { ok: false, message: _netError(e) }
+    return { ok: false, message: _netError(e, base) }
   }
 }
 

@@ -1,5 +1,14 @@
 'use strict'
 
+// Rede: o Electron 28 roda Node 18, cujo fetch (undici) e net.connect tentam SÓ
+// o 1º endereço do DNS. api.pedeplus.com.br (Cloudflare) devolve IPv6 primeiro;
+// em rede sem rota IPv6 isso dava UND_ERR_CONNECT_TIMEOUT após 10s → "fetch
+// failed" no pareamento (e o socket sofria o mesmo). IPv4 primeiro + happy
+// eyeballs (tenta os demais endereços) resolve sem quebrar rede só-IPv6.
+// Precisa rodar ANTES de qualquer conexão — por isso fica no topo.
+try { require('dns').setDefaultResultOrder('ipv4first') } catch { /* Node antigo */ }
+try { require('net').setDefaultAutoSelectFamily(true) } catch { /* Node < 18.18 */ }
+
 const { app, BrowserWindow, Tray, Menu, ipcMain, Notification, nativeImage } = require('electron')
 const path = require('path')
 const Store = require('electron-store')
