@@ -20,6 +20,8 @@ let _setores = ['COZINHA', 'CAIXA', 'BAR']
 let _active = []       // deviceKeys EM USO (várias ao mesmo tempo), na ordem escolhida
 let _sectorOf = {}     // deviceKey -> setor ('' = todos os pedidos)
 let _otpState = null   // { tempToken, email } enquanto o 2FA está pendente
+let _status = 'disconnected'
+let _connectedSince = null // Date em que ESTA janela viu a conexão subir
 let _verClicks = 0
 let _verTimer = null
 
@@ -102,6 +104,12 @@ async function init() {
 
   applyAccount(_cfg)
 
+  // Sem internet: faixa no topo (o socket já tenta reconectar sozinho).
+  const net = () => byId('net-banner').classList.toggle('on', !navigator.onLine)
+  window.addEventListener('online', net)
+  window.addEventListener('offline', net)
+  net()
+
   // Já pareado (credencial salva) → pula direto pro passo da impressora ou pro Pronto.
   if (_cfg.apiKey) {
     show('printer')
@@ -119,7 +127,21 @@ function applyAccount(cfg) {
   const nome = (cfg && (cfg.estabelecimento || cfg.tenantName)) || ''
   const box = byId('account')
   byId('account-name').textContent = nome || '—'
+  byId('account-avatar').textContent = (nome.trim()[0] || '—').toUpperCase()
   box.classList.toggle('on', !!(cfg && cfg.apiKey && nome))
+  renderSince()
+}
+
+function hhmm(d) {
+  return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+}
+
+function renderSince() {
+  const elx = byId('account-since')
+  if (!elx) return
+  elx.textContent = _status === 'connected'
+    ? (_connectedSince ? `Conectado desde ${hhmm(_connectedSince)}` : 'Conectado agora')
+    : _status === 'reconnecting' ? 'Reconectando…' : 'Sem conexão com o servidor'
 }
 
 // ─── Passo 1: pareamento por código ───────────────────────────────────────────
@@ -214,8 +236,35 @@ async function afterLogin(res) {
   applyHeaderFields(_cfg)
   applyAccount(_cfg)
   msg('login-msg', '', 'dim')
+  // A busca de impressoras corre por baixo enquanto a transição toca.
+  const carregando = loadPrinters(true)
+  await playConnectAnimation(_cfg.estabelecimento || _cfg.tenantName || '')
   show('printer')
-  await loadPrinters(true)
+  await carregando
+}
+
+// Anel pulsando no logo → check verde → nome do estabelecimento (~1.2s).
+// Movimento reduzido: só a troca de estado, sem espera.
+function playConnectAnimation(nome) {
+  const reduz = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  if (reduz) return Promise.resolve()
+  const ov = byId('connect-ov')
+  byId('cx-name').textContent = nome
+  byId('cx-label').textContent = 'Conectando…'
+  ov.classList.remove('ok', 'show')
+  ov.classList.add('on')
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+  return (async () => {
+    await wait(16)
+    ov.classList.add('show')
+    await wait(520)
+    byId('cx-label').textContent = 'Conectado em'
+    ov.classList.add('ok')
+    await wait(700)
+    ov.classList.remove('show')
+    await wait(250)
+    ov.classList.remove('on', 'ok')
+  })()
 }
 
 // ─── Passo 2: impressora ──────────────────────────────────────────────────────
@@ -248,16 +297,24 @@ function isSystemPort(t) {
 async function loadPrinters(autoSelect) {
   const list = byId('plist')
   byId('printer-sub').textContent = 'Procurando impressoras conectadas...'
-  list.innerHTML = ''
+  list.innerHTML = '<div class="skel"></div>'
   msg('printer-msg', '', 'dim')
+  const rescan = byId('btn-rescan')
+  rescan.disabled = true
+  rescan.innerHTML = '<span class="spin"></span>Procurando…'
 
   let data
   try {
     data = await ipcRenderer.invoke('get-print-targets')
   } catch (e) {
     byId('printer-sub').textContent = 'Não foi possível procurar impressoras.'
+    list.innerHTML = ''
+    list.appendChild(emptyState(ICON_ALERT, 'Falha ao procurar impressoras', 'Clique em <b>Reescanear</b> para tentar de novo.'))
     msg('printer-msg', String((e && e.message) || e), 'err')
     return
+  } finally {
+    rescan.disabled = false
+    rescan.textContent = 'Reescanear'
   }
 
   _setores = (data && data.setores) || _setores
@@ -278,7 +335,8 @@ async function loadPrinters(autoSelect) {
 
   if (_targets.length === 0) {
     byId('printer-sub').textContent = 'Nenhuma impressora encontrada.'
-    list.innerHTML = '<div class="empty">Ligue a impressora e conecte o cabo USB,<br />depois clique em <b>Reescanear</b>.</div>'
+    list.innerHTML = ''
+    list.appendChild(emptyState(ICON_PRINTER, 'Nenhuma impressora encontrada', 'Ligue a impressora e conecte o cabo USB,<br />depois clique em <b>Reescanear</b>.'))
     byId('btn-add').disabled = true
     byId('btn-printer-next').disabled = true
     return
@@ -304,14 +362,18 @@ function renderActive() {
     sub.textContent = n === 1
       ? 'Encontramos 1 impressora. Adicione ela para começar a imprimir.'
       : `Encontramos ${n} impressoras. Adicione as que você vai usar — pode ser mais de uma.`
-    list.innerHTML = '<div class="empty">Nenhuma impressora em uso.<br />Clique em <b>+ Adicionar impressora</b>.</div>'
+    list.appendChild(emptyState(ICON_PRINTER, 'Nenhuma impressora em uso', 'Clique em <b>Adicionar impressora</b> logo abaixo.'))
   } else {
     sub.textContent = _active.length === 1
       ? 'Imprima um teste para confirmar que é essa a impressora. Você pode adicionar outras.'
       : `${_active.length} impressoras em uso. Diga o setor de cada uma e imprima um teste em cada.`
+    let i = 0
     for (const key of _active) {
       const t = _targets.find((x) => x.deviceKey === key)
-      if (t) list.appendChild(buildCard(t))
+      if (!t) continue
+      const card = buildCard(t)
+      card.style.animationDelay = `${Math.min(i++, 6) * 50}ms`
+      list.appendChild(card)
     }
   }
 
@@ -319,44 +381,131 @@ function renderActive() {
   byId('btn-printer-next').disabled = !_active.length
 }
 
+const ICON_PRINTER = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M6 14h12v7H6z"/></svg>'
+const ICON_ALERT = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>'
+const ICON_CHECK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>'
+const ICON_X = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>'
+const ICON_CHEVRON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>'
+
+function emptyState(icon, title, html) {
+  const box = el('div', 'empty')
+  const ico = el('div', 'empty-ico'); ico.innerHTML = icon
+  box.appendChild(ico)
+  box.appendChild(el('div', 'empty-title', title))
+  const p = el('div'); p.innerHTML = html
+  box.appendChild(p)
+  return box
+}
+
+// Select de setor (custom). Mesmos valores do <select> antigo: '' = todos.
+function buildSectorSelect(value, onChange) {
+  const opts = [{ v: '', l: 'Todos os pedidos' }].concat(_setores.map((s) => ({ v: s, l: sectorLabel(s) })))
+  const wrap = el('div', 'xsel')
+  const btn = document.createElement('button')
+  btn.type = 'button'; btn.className = 'xsel-btn'
+  btn.setAttribute('aria-haspopup', 'listbox'); btn.setAttribute('aria-expanded', 'false')
+  const lbl = el('span')
+  btn.appendChild(lbl)
+  btn.insertAdjacentHTML('beforeend', ICON_CHEVRON)
+  const menu = el('div', 'xsel-menu'); menu.setAttribute('role', 'listbox')
+  let cur = value || ''
+  let hl = -1
+
+  const paint = () => {
+    lbl.textContent = (opts.find((o) => o.v === cur) || opts[0]).l
+    menu.querySelectorAll('.xsel-opt').forEach((n, i) => {
+      n.classList.toggle('sel', opts[i].v === cur)
+      n.classList.toggle('hl', i === hl)
+      n.setAttribute('aria-selected', opts[i].v === cur ? 'true' : 'false')
+    })
+  }
+  const onDoc = (e) => { if (!wrap.contains(e.target)) close() }
+  function close() {
+    menu.classList.remove('on'); btn.setAttribute('aria-expanded', 'false')
+    document.removeEventListener('click', onDoc, true)
+  }
+  const open = () => {
+    // Abre pra cima quando não cabe abaixo (janela baixa / último card).
+    const r = btn.getBoundingClientRect()
+    menu.classList.toggle('up', window.innerHeight - r.bottom < opts.length * 36 + 80)
+    menu.classList.add('on'); btn.setAttribute('aria-expanded', 'true')
+    hl = Math.max(0, opts.findIndex((o) => o.v === cur)); paint()
+    document.addEventListener('click', onDoc, true)
+  }
+  const pick = (v) => {
+    close()
+    if (v === cur) return
+    cur = v; paint(); onChange(v)
+  }
+  opts.forEach((o) => {
+    const it = document.createElement('button')
+    it.type = 'button'; it.className = 'xsel-opt'; it.setAttribute('role', 'option')
+    it.appendChild(el('span', '', o.l))
+    it.insertAdjacentHTML('beforeend', '<span class="ck">' + ICON_CHECK + '</span>')
+    it.addEventListener('click', (e) => { e.stopPropagation(); pick(o.v) })
+    menu.appendChild(it)
+  })
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    if (menu.classList.contains('on')) close(); else open()
+  })
+  btn.addEventListener('keydown', (e) => {
+    const aberto = menu.classList.contains('on')
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      if (!aberto) { open(); return }
+      hl = (hl + (e.key === 'ArrowDown' ? 1 : -1) + opts.length) % opts.length; paint()
+    } else if ((e.key === 'Enter' || e.key === ' ') && aberto) {
+      e.preventDefault(); pick(opts[hl].v)
+    } else if (e.key === 'Escape' && aberto) {
+      e.preventDefault(); close()
+    }
+  })
+  wrap.appendChild(btn); wrap.appendChild(menu)
+  paint()
+  return wrap
+}
+
 function buildCard(t) {
   const card = el('div', 'pcard active')
   card.dataset.key = t.deviceKey
 
   const top = el('div', 'pcard-top')
+  const ico = el('div', 'p-ico'); ico.innerHTML = ICON_PRINTER + '<span class="p-dot"></span>'
+  top.appendChild(ico)
   const body = el('div', 'pcard-body')
   body.appendChild(el('div', 'pcard-name', friendlyName(t)))
-  body.appendChild(el('div', 'pcard-how', howConnected(t)))
+  const how = el('div', 'pcard-how')
+  const st = el('span', 'st', 'Pronta')
+  how.appendChild(st)
+  how.appendChild(el('span', '', '·'))
+  how.appendChild(el('span', '', howConnected(t)))
+  body.appendChild(how)
   top.appendChild(body)
 
   const x = document.createElement('button')
-  x.type = 'button'; x.className = 'pcard-x'; x.textContent = '✕'
+  x.type = 'button'; x.className = 'pcard-x'; x.innerHTML = ICON_X
   x.title = 'Não usar esta impressora'
-  x.addEventListener('click', () => removeActive(t.deviceKey))
+  x.setAttribute('aria-label', 'Não usar esta impressora')
   top.appendChild(x)
   card.appendChild(top)
 
   const tools = el('div', 'pcard-tools')
 
   // Setor por impressora — independente entre elas.
-  const sel = document.createElement('select')
-  sel.className = 'sector'
-  sel.innerHTML = '<option value="">Todos os pedidos</option>'
-    + _setores.map((s) => `<option value="${s}">${sectorLabel(s)}</option>`).join('')
-  sel.value = _sectorOf[t.deviceKey] || ''
-  sel.addEventListener('change', () => {
-    _sectorOf[t.deviceKey] = sel.value
+  tools.appendChild(buildSectorSelect(_sectorOf[t.deviceKey] || '', (v) => {
+    _sectorOf[t.deviceKey] = v
     void persistPrinters()
-  })
-  tools.appendChild(sel)
+  }))
 
   const testBtn = document.createElement('button')
-  testBtn.type = 'button'; testBtn.className = 'btn-ghost'; testBtn.textContent = 'Imprimir teste'
+  testBtn.type = 'button'; testBtn.className = 'btn-ghost btn-sm'; testBtn.textContent = 'Imprimir teste'
   const fb = el('span', 'pcard-fb')
   testBtn.addEventListener('click', async (e) => {
     e.stopPropagation()
     testBtn.disabled = true
-    fb.style.color = '#9ca3af'; fb.textContent = 'Enviando...'
+    testBtn.innerHTML = '<span class="spin"></span>Enviando…'
+    fb.className = 'pcard-fb'; fb.textContent = ''
     try {
       const prev = _mapping[t.deviceKey] || {}
       await ipcRenderer.invoke('test-print', {
@@ -364,16 +513,37 @@ function buildCard(t) {
         profileId: prev.profileId ?? t.suggestedProfileId ?? null,
         cortarPapel: prev.cortarPapel !== false,
       })
-      fb.style.color = '#4ade80'; fb.textContent = 'Saiu na impressora?'
+      card.classList.remove('err'); st.textContent = 'Pronta'
+      fb.className = 'pcard-fb ok'; fb.innerHTML = ICON_CHECK + '<span>Enviado. Saiu na impressora?</span>'
     } catch (err) {
-      fb.style.color = '#f87171'; fb.textContent = 'Erro: ' + ((err && err.message) || err)
+      card.classList.add('err'); st.textContent = 'Erro'
+      fb.className = 'pcard-fb err'; fb.textContent = 'Erro: ' + ((err && err.message) || err)
     } finally {
       testBtn.disabled = false
+      testBtn.textContent = 'Imprimir teste'
     }
   })
   tools.appendChild(testBtn)
   tools.appendChild(fb)
   card.appendChild(tools)
+
+  // Remover com confirmação inline.
+  x.addEventListener('click', () => {
+    if (card.querySelector('.pcard-confirm')) return
+    const conf = el('div', 'pcard-confirm')
+    conf.appendChild(el('span', '', 'Parar de usar esta impressora?'))
+    conf.appendChild(el('div', 'spacer'))
+    const nao = document.createElement('button')
+    nao.type = 'button'; nao.className = 'btn-ghost btn-sm'; nao.textContent = 'Cancelar'
+    nao.addEventListener('click', () => { conf.remove(); tools.style.display = '' })
+    const sim = document.createElement('button')
+    sim.type = 'button'; sim.className = 'btn-danger btn-sm'; sim.textContent = 'Remover'
+    sim.addEventListener('click', () => removeActive(t.deviceKey))
+    conf.appendChild(nao); conf.appendChild(sim)
+    tools.style.display = 'none'
+    card.appendChild(conf)
+    sim.focus()
+  })
 
   return card
 }
@@ -404,8 +574,11 @@ function renderAddList() {
   }
   for (const t of livres) {
     const item = el('div', 'aitem')
-    item.appendChild(el('div', 'aitem-name', friendlyName(t)))
-    item.appendChild(el('div', 'aitem-how', howConnected(t)))
+    const ico = el('div', 'p-ico'); ico.innerHTML = ICON_PRINTER
+    const txt = el('div')
+    txt.appendChild(el('div', 'aitem-name', friendlyName(t)))
+    txt.appendChild(el('div', 'aitem-how', howConnected(t)))
+    item.appendChild(ico); item.appendChild(txt)
     item.addEventListener('click', () => addActive(t.deviceKey))
     box.appendChild(item)
   }
@@ -482,6 +655,8 @@ async function finishPrinterStep() {
 function renderDone() {
   const facts = byId('done-facts')
   facts.innerHTML = ''
+  addFact(facts, 'Conexão', _status === 'connected' ? 'Conectado' : _status === 'reconnecting' ? 'Reconectando…' : 'Desconectado',
+    _status === 'connected' ? 'ok' : _status === 'reconnecting' ? 'warn' : 'err')
   addFact(facts, 'Restaurante', _cfg.tenantName || '—')
   if (!_active.length) {
     addFact(facts, 'Impressora', '—')
@@ -497,10 +672,10 @@ function renderDone() {
   if (_cfg.userEmail) addFact(facts, 'Conta', _cfg.userEmail)
 }
 
-function addFact(box, k, v) {
+function addFact(box, k, v, tom) {
   const row = el('div', 'fact')
   row.appendChild(el('span', 'fact-k', k))
-  row.appendChild(el('span', 'fact-v', v))
+  row.appendChild(el('span', 'fact-v' + (tom ? ' ' + tom : ''), v))
   box.appendChild(row)
 }
 
@@ -600,12 +775,17 @@ const STEP_OF = { pair: 1, login: 1, otp: 1, printer: 2, done: 3 }
 
 function show(name) {
   PANELS.forEach((p) => byId('panel-' + p).classList.toggle('on', p === name))
+  // Rodapé fixo: só as ações do passo atual.
+  document.querySelectorAll('.foot-group').forEach((g) => g.classList.toggle('on', g.dataset.for === name))
   const cur = STEP_OF[name] || 1
   for (let i = 1; i <= 3; i++) {
     const s = byId('st-' + i)
-    s.classList.toggle('active', i === cur)
-    s.classList.toggle('done', i < cur)
+    // "Pronto" é o fim: o passo 3 já entra concluído (check), não "ativo".
+    s.classList.toggle('active', i === cur && !(name === 'done' && i === 3))
+    s.classList.toggle('done', i < cur || (name === 'done' && i === 3))
   }
+  for (let i = 1; i <= 2; i++) byId('bar-' + i).classList.toggle('fill', i < cur)
+  byId('content').scrollTop = 0
 }
 
 // Três estados: conectado / reconectando / desconectado. "Reconectando" existe
@@ -613,12 +793,29 @@ function show(name) {
 // esperar é o certo, não mexer em nada.
 function setStatus(status) {
   const elx = byId('status')
-  const label = status === 'connected'    ? '● Conectado'
-              : status === 'reconnecting' ? '● Reconectando...'
-              :                             '● Desconectado'
-  elx.textContent = label
-  elx.className = status === 'connected' ? 'connected' : status === 'reconnecting' ? 'reconnecting' : 'disconnected'
+  const antes = _status
+  _status = status === 'connected' ? 'connected' : status === 'reconnecting' ? 'reconnecting' : 'disconnected'
+  const label = _status === 'connected'    ? 'Conectado'
+              : _status === 'reconnecting' ? 'Reconectando...'
+              :                              'Desconectado'
+  elx.querySelector('.lbl').textContent = label
+  elx.className = _status
+  if (_status === 'connected' && antes !== 'connected') {
+    // Só a transição observada aqui vira "desde HH:MM"; janela aberta já conectada = "agora".
+    if (antes !== null && antes !== undefined && _statusVisto) _connectedSince = new Date()
+    // Reconectou: pulso curto na pill.
+    if (antes === 'reconnecting') {
+      void elx.offsetWidth
+      elx.classList.add('just-connected')
+      setTimeout(() => elx.classList.remove('just-connected'), 600)
+    }
+  }
+  if (_status !== 'connected') _connectedSince = null
+  _statusVisto = true
+  renderSince()
+  if (byId('panel-done').classList.contains('on')) renderDone()
 }
+let _statusVisto = false
 
 // Reflete o estado REAL do registro do Windows (não a preferência salva): se
 // desligarem por fora, pelo Gerenciador de Tarefas, a tela mostra desligado.
@@ -648,7 +845,8 @@ function msg(id, text, kind) {
   const n = byId(id)
   if (!n) return
   n.textContent = text || ''
-  n.className = 'msg ' + (kind || 'dim')
+  // Mensagens de formulário (.box) viram alerta com fundo; as demais, texto.
+  n.className = 'msg ' + (n.classList.contains('box') ? 'box ' : '') + (kind || 'dim')
 }
 
 document.addEventListener('DOMContentLoaded', init)

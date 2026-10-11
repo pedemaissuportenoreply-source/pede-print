@@ -18,9 +18,12 @@ function openConfigWindow() {
     height:     720,
     title:      'Pede+ Print',
     icon:       path.join(__dirname, 'assets', 'app-icon.ico'),
-    resizable:  false,
+    // Redimensionável: o layout novo rola com cabeçalho/rodapé fixos.
+    minWidth:   440,
+    minHeight:  520,
+    resizable:  true,
     minimizable: true,
-    maximizable: false,
+    maximizable: true,
     webPreferences: {
       nodeIntegration:  true,
       contextIsolation: false,
