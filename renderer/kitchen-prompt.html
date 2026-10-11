@@ -2,13 +2,39 @@
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8" />
+<script>
+  // Mesmo tema da janela principal (localStorage 'pp-tema'); padrão claro.
+  (function () {
+    var t = 'light'
+    try { t = localStorage.getItem('pp-tema') || 'light' } catch (e) {}
+    var dark = t === 'dark' || (t === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
+  })()
+</script>
 <style>
+  /* Contraste AA no claro: texto ≥ 4.5:1 (CTA #C2410C + branco = 5.2:1). */
+  :root, :root[data-theme="light"] {
+    --bg: #FAFAF9; --text: #1C1917; --text-2: #57534E; --text-q: #292524;
+    --badge-fg: #9A3412; --badge-bg: #FFF4EC; --badge-border: #FED7AA;
+    --code: #C2410C;
+    --cta: #C2410C; --cta-hover: #9A3412; --cta-fg: #ffffff;
+    --ghost-fg: #44403C; --ghost-border: #D6D3D1; --ghost-hover: #F5F5F4;
+    --focus: rgba(234, 88, 12, .35);
+  }
+  :root[data-theme="dark"] {
+    --bg: #0a0a0a; --text: #fafafa; --text-2: #a1a1aa; --text-q: #d4d4d8;
+    --badge-fg: #FB923C; --badge-bg: rgba(234, 88, 12, .12); --badge-border: rgba(234, 88, 12, .3);
+    --code: #FB923C;
+    --cta: #EA580C; --cta-hover: #f26a1f; --cta-fg: #ffffff;
+    --ghost-fg: #d4d4d8; --ghost-border: #3f3f46; --ghost-hover: rgba(255,255,255,.05);
+    --focus: rgba(251, 146, 60, .4);
+  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body {
     height: 100%;
-    font-family: 'Segoe UI', system-ui, sans-serif;
-    background: #0a0a0a;
-    color: #fafafa;
+    font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
     -webkit-user-select: none;
     overflow: hidden;
   }
@@ -24,16 +50,16 @@
     font-weight: 700;
     letter-spacing: .5px;
     text-transform: uppercase;
-    color: #FB923C;
-    background: rgba(234, 88, 12, .12);
-    border: 1px solid rgba(234, 88, 12, .3);
+    color: var(--badge-fg);
+    background: var(--badge-bg);
+    border: 1px solid var(--badge-border);
     padding: 4px 10px;
     border-radius: 999px;
   }
-  h1 { font-size: 20px; font-weight: 800; margin-top: 14px; }
-  .code { color: #FB923C; }
-  .info { margin-top: 6px; font-size: 14px; color: #a1a1aa; min-height: 18px; }
-  .q { margin-top: 16px; font-size: 14px; color: #d4d4d8; }
+  h1 { font-size: 20px; font-weight: 800; margin-top: 14px; letter-spacing: -.01em; }
+  .code { color: var(--code); }
+  .info { margin-top: 6px; font-size: 14px; color: var(--text-2); min-height: 18px; }
+  .q { margin-top: 16px; font-size: 14px; color: var(--text-q); }
   .actions { margin-top: auto; display: flex; gap: 10px; }
   button {
     flex: 1;
@@ -41,15 +67,18 @@
     border-radius: 12px;
     font-size: 14px;
     font-weight: 700;
+    font-family: inherit;
     cursor: pointer;
     border: 1px solid transparent;
-    transition: filter .12s ease, transform .05s ease;
+    transition: background-color .12s ease, transform .08s ease;
   }
-  button:active { transform: translateY(1px); }
-  .print { background: #EA580C; color: #fff; }
-  .print:hover { filter: brightness(1.08); }
-  .ignore { background: transparent; color: #d4d4d8; border-color: #3f3f46; }
-  .ignore:hover { background: rgba(255,255,255,.05); }
+  button:active { transform: scale(.98); }
+  button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--focus); }
+  .print { background: var(--cta); color: var(--cta-fg); }
+  .print:hover { background: var(--cta-hover); }
+  .ignore { background: transparent; color: var(--ghost-fg); border-color: var(--ghost-border); }
+  .ignore:hover { background: var(--ghost-hover); }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>

@@ -19,7 +19,7 @@ function showKitchenPrompt({ token, code, info }) {
     alwaysOnTop: true,
     center: true,
     skipTaskbar: false,
-    backgroundColor: '#0a0a0a',
+    backgroundColor: '#FAFAF9', // tema claro é o padrão (evita flash escuro)
     webPreferences: { nodeIntegration: true, contextIsolation: false },
   })
   win.setMenu(null)

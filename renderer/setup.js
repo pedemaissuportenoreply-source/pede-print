@@ -103,6 +103,7 @@ async function init() {
   byId('dev-url').addEventListener('input', refreshDevHint)
 
   applyAccount(_cfg)
+  initTema()
 
   // Sem internet: faixa no topo (o socket já tenta reconectar sozinho).
   const net = () => byId('net-banner').classList.toggle('on', !navigator.onLine)
@@ -757,6 +758,41 @@ async function saveAdvanced() {
   } catch (e) {
     msg('adv-msg', 'Erro: ' + ((e && e.message) || e), 'err')
   }
+}
+
+// ─── Tema (Claro padrão / Escuro / Sistema) ──────────────────────────────────
+// Preferência só de aparência: fica no localStorage do app (userData do
+// Electron), compartilhado com o popup de NOVO PEDIDO. Nada passa pelo main.
+
+const TEMA_KEY = 'pp-tema'
+
+function lerTema() {
+  try {
+    const t = localStorage.getItem(TEMA_KEY)
+    return t === 'dark' || t === 'system' ? t : 'light'
+  } catch { return 'light' }
+}
+
+function aplicarTema(t) {
+  const dark = t === 'dark' || (t === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
+  document.querySelectorAll('#theme-seg button').forEach((b) => {
+    b.setAttribute('aria-pressed', b.dataset.tema === t ? 'true' : 'false')
+  })
+}
+
+function initTema() {
+  aplicarTema(lerTema())
+  document.querySelectorAll('#theme-seg button').forEach((b) => {
+    b.addEventListener('click', () => {
+      try { localStorage.setItem(TEMA_KEY, b.dataset.tema) } catch { /* sem storage: só nesta sessão */ }
+      aplicarTema(b.dataset.tema)
+    })
+  })
+  // "Sistema" acompanha a troca do Windows ao vivo.
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (lerTema() === 'system') aplicarTema('system')
+  })
 }
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────

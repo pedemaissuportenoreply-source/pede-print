@@ -1,1 +1,1 @@
-Visual novo, mais moderno e limpo, no claro e no escuro: status com ponto animado, card do estabelecimento, impressoras em cards com setor, teste e remoção com confirmação. Animação ao conectar e janela redimensionável.
+Tema claro como padrão (com contraste reforçado) e seletor de aparência Claro / Escuro / Sistema na tela "Tudo pronto". O aviso de NOVO PEDIDO segue o mesmo tema.
