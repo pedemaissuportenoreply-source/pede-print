@@ -71,7 +71,9 @@ async function init() {
   byId('btn-printer-next').addEventListener('click', finishPrinterStep)
   byId('btn-add').addEventListener('click', (e) => { e.stopPropagation(); toggleAddDrop() })
   byId('add-search').addEventListener('input', renderAddList)
-  byId('add-search').addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleAddDrop(false) })
+  byId('add-search').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { toggleAddDrop(false); byId('btn-add').focus() }
+  })
   byId('adddrop').addEventListener('click', (e) => e.stopPropagation())
   document.addEventListener('click', () => toggleAddDrop(false))
 
@@ -398,6 +400,66 @@ function emptyState(icon, title, html) {
   return box
 }
 
+// ── Camada flutuante (menus) ──────────────────────────────────────────────────
+// O menu vai pro FIM do <body> com position fixed calculada pelo botão: fica
+// fora do stacking context e do overflow dos cards (antes o card tracejado
+// seguinte pintava por cima). Um aberto por vez; reposiciona ao rolar/redimensionar.
+
+let _flut = null // { el, anchor, minW, onClose }
+
+function posicionarFlutuante() {
+  if (!_flut) return
+  const { el, anchor, minW } = _flut
+  if (!anchor.isConnected) { fecharFlutuante(); return }
+  const r = anchor.getBoundingClientRect()
+  // Âncora rolou pra fora da área de conteúdo: fecha em vez de flutuar solto.
+  const area = byId('content').getBoundingClientRect()
+  if (r.bottom < area.top || r.top > area.bottom) { fecharFlutuante(); return }
+  const m = 8, gap = 6
+  const vw = window.innerWidth, vh = window.innerHeight
+  const w = Math.min(Math.max(r.width, minW), vw - 2 * m)
+  el.style.width = w + 'px'
+  el.style.left = Math.round(Math.min(Math.max(m, r.left), vw - w - m)) + 'px'
+  el.style.maxHeight = ''
+  el.style.top = '0px'; el.style.bottom = ''
+  const h = el.scrollHeight + 2
+  const baixo = vh - r.bottom - gap - m
+  const cima = r.top - gap - m
+  // Abre pra baixo; só sobe quando não cabe embaixo e em cima há mais espaço.
+  if (h <= baixo || baixo >= cima) {
+    el.classList.remove('up')
+    el.style.top = Math.round(r.bottom + gap) + 'px'
+    el.style.maxHeight = Math.max(96, baixo) + 'px'
+  } else {
+    el.classList.add('up')
+    el.style.top = ''
+    el.style.bottom = Math.round(vh - r.top + gap) + 'px'
+    el.style.maxHeight = Math.max(96, cima) + 'px'
+  }
+}
+
+function abrirFlutuante(anchor, el, opcoes) {
+  fecharFlutuante()
+  if (el.parentNode !== document.body) document.body.appendChild(el)
+  _flut = { el, anchor, minW: (opcoes && opcoes.minW) || 180, onClose: opcoes && opcoes.onClose }
+  el.classList.add('on')
+  posicionarFlutuante()
+}
+
+function fecharFlutuante() {
+  if (!_flut) return
+  const f = _flut
+  _flut = null
+  f.el.classList.remove('on')
+  if (f.onClose) f.onClose()
+}
+
+window.addEventListener('resize', posicionarFlutuante)
+// capture: pega o scroll do .content (scroll não borbulha). Rolar DENTRO do menu não conta.
+document.addEventListener('scroll', (e) => {
+  if (_flut && !_flut.el.contains(e.target)) posicionarFlutuante()
+}, true)
+
 // Select de setor (custom). Mesmos valores do <select> antigo: '' = todos.
 function buildSectorSelect(value, onChange) {
   const opts = [{ v: '', l: 'Todos os pedidos' }].concat(_setores.map((s) => ({ v: s, l: sectorLabel(s) })))
@@ -420,27 +482,35 @@ function buildSectorSelect(value, onChange) {
       n.setAttribute('aria-selected', opts[i].v === cur ? 'true' : 'false')
     })
   }
-  const onDoc = (e) => { if (!wrap.contains(e.target)) close() }
-  function close() {
-    menu.classList.remove('on'); btn.setAttribute('aria-expanded', 'false')
-    document.removeEventListener('click', onDoc, true)
+  const aberto = () => _flut !== null && _flut.el === menu
+  const onDoc = (e) => { if (!wrap.contains(e.target) && !menu.contains(e.target)) close() }
+  // Fechar (por qualquer caminho): limpa estado e tira o menu do body.
+  const aoFechar = () => {
+    btn.setAttribute('aria-expanded', 'false')
+    document.removeEventListener('pointerdown', onDoc, true)
+    menu.remove()
+  }
+  function close(focar) {
+    if (aberto()) fecharFlutuante()
+    if (focar) btn.focus()
   }
   const open = () => {
-    // Abre pra cima quando não cabe abaixo (janela baixa / último card).
-    const r = btn.getBoundingClientRect()
-    menu.classList.toggle('up', window.innerHeight - r.bottom < opts.length * 36 + 80)
-    menu.classList.add('on'); btn.setAttribute('aria-expanded', 'true')
     hl = Math.max(0, opts.findIndex((o) => o.v === cur)); paint()
-    document.addEventListener('click', onDoc, true)
+    abrirFlutuante(btn, menu, { minW: 180, onClose: aoFechar })
+    btn.setAttribute('aria-expanded', 'true')
+    document.addEventListener('pointerdown', onDoc, true)
   }
   const pick = (v) => {
-    close()
+    close(true)
     if (v === cur) return
     cur = v; paint(); onChange(v)
   }
   opts.forEach((o) => {
     const it = document.createElement('button')
     it.type = 'button'; it.className = 'xsel-opt'; it.setAttribute('role', 'option')
+    it.tabIndex = -1
+    // Foco fica no botão do select (as setas continuam valendo durante o clique).
+    it.addEventListener('mousedown', (e) => e.preventDefault())
     it.appendChild(el('span', '', o.l))
     it.insertAdjacentHTML('beforeend', '<span class="ck">' + ICON_CHECK + '</span>')
     it.addEventListener('click', (e) => { e.stopPropagation(); pick(o.v) })
@@ -448,21 +518,24 @@ function buildSectorSelect(value, onChange) {
   })
   btn.addEventListener('click', (e) => {
     e.stopPropagation()
-    if (menu.classList.contains('on')) close(); else open()
+    if (aberto()) close(true); else open()
   })
   btn.addEventListener('keydown', (e) => {
-    const aberto = menu.classList.contains('on')
+    const on = aberto()
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault()
-      if (!aberto) { open(); return }
+      if (!on) { open(); return }
       hl = (hl + (e.key === 'ArrowDown' ? 1 : -1) + opts.length) % opts.length; paint()
-    } else if ((e.key === 'Enter' || e.key === ' ') && aberto) {
+      const item = menu.children[hl]
+      if (item) item.scrollIntoView({ block: 'nearest' })
+    } else if ((e.key === 'Enter' || e.key === ' ') && on) {
       e.preventDefault(); pick(opts[hl].v)
-    } else if (e.key === 'Escape' && aberto) {
-      e.preventDefault(); close()
+    } else if ((e.key === 'Escape' || e.key === 'Tab') && on) {
+      if (e.key === 'Escape') e.preventDefault()
+      close(e.key === 'Escape')
     }
   })
-  wrap.appendChild(btn); wrap.appendChild(menu)
+  wrap.appendChild(btn)
   paint()
   return wrap
 }
@@ -553,10 +626,18 @@ function buildCard(t) {
 
 function toggleAddDrop(force) {
   const drop = byId('adddrop')
-  const on = force === undefined ? !drop.classList.contains('on') : !!force
-  drop.classList.toggle('on', on)
-  if (on) { renderAddList(); byId('add-search').focus() }
-  else { byId('add-search').value = '' }
+  const aberto = _flut !== null && _flut.el === drop
+  const on = force === undefined ? !aberto : !!force
+  if (on) {
+    renderAddList()
+    // Mesma camada flutuante dos selects (fim do body, fixed pelo botão).
+    if (!aberto) abrirFlutuante(byId('btn-add'), drop, { minW: 260, onClose: () => { byId('add-search').value = '' } })
+    else posicionarFlutuante()
+    byId('add-search').focus()
+  } else {
+    if (aberto) fecharFlutuante()
+    byId('add-search').value = ''
+  }
 }
 
 // Lista só as DETECTADAS que ainda não estão em uso, filtradas pela busca.
@@ -583,6 +664,8 @@ function renderAddList() {
     item.addEventListener('click', () => addActive(t.deviceKey))
     box.appendChild(item)
   }
+  // Altura mudou (busca): reposiciona a camada flutuante se ela estiver aberta.
+  if (_flut && _flut.el === byId('adddrop')) posicionarFlutuante()
 }
 
 function addActive(key) {

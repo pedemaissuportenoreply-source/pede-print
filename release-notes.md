@@ -1,1 +1,1 @@
-Tema claro como padrão (com contraste reforçado) e seletor de aparência Claro / Escuro / Sistema na tela "Tudo pronto". O aviso de NOVO PEDIDO segue o mesmo tema.
+Corrige o menu de setor da impressora (Todos os pedidos / Só cozinha / Só caixa / Só bar) que abria por baixo do card "Adicionar impressora". Os menus agora abrem por cima de tudo, para cima quando não cabem embaixo, e fecham ao clicar fora ou no Esc.

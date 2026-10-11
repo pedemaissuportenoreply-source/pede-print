@@ -51,6 +51,7 @@
       --radius-sm: 10px;
       --ease: cubic-bezier(.2, .8, .2, 1);
       --dur: 220ms;
+      --z-pop: 1000;             /* topo da escala: menus flutuantes (fim do body) */
     }
     :root[data-theme="dark"] {
       color-scheme: dark;
@@ -287,7 +288,9 @@
     .pcard {
       background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
       padding: 14px; transition: border-color .15s, box-shadow .15s;
-      animation: card-in .35s var(--ease) both;
+      /* backwards (não both): terminada a entrada, nenhum transform/opacity fica
+         aplicado — o card não vira stacking context permanente. */
+      animation: card-in .35s var(--ease) backwards;
     }
     .pcard:hover { border-color: var(--border-strong); }
     /* Impressora em uso (selecionada): borda da marca. */
@@ -335,14 +338,16 @@
     .xsel-btn[aria-expanded="true"] { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
     .xsel-btn svg { color: var(--text-3); transition: transform .2s var(--ease); }
     .xsel-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
-    .xsel-menu {
-      position: absolute; z-index: 30; left: 0; top: calc(100% + 6px); min-width: 100%;
-      background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-      box-shadow: var(--shadow-pop); padding: 5px; display: none;
-      transform-origin: top left; animation: menu-in .16s var(--ease);
+    /* Menus flutuantes: movidos pro fim do <body> e posicionados (fixed) pelo
+       JS a partir do botão — fora do stacking context e do overflow dos cards. */
+    .xsel-menu, .adddrop {
+      position: fixed; z-index: var(--z-pop); display: none; overflow-y: auto; overscroll-behavior: contain;
+      background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow-pop);
+      transform-origin: top left;
     }
-    .xsel-menu.up { top: auto; bottom: calc(100% + 6px); transform-origin: bottom left; }
-    .xsel-menu.on { display: block; }
+    .xsel-menu { border-radius: var(--radius-sm); padding: 5px; }
+    .xsel-menu.up, .adddrop.up { transform-origin: bottom left; }
+    .xsel-menu.on, .adddrop.on { display: block; animation: menu-in .16s var(--ease); }
     @keyframes menu-in { from { opacity: 0; transform: scale(.97) translateY(-3px) } to { opacity: 1; transform: none } }
     .xsel-opt {
       display: flex; align-items: center; gap: 8px; width: 100%; height: 34px; padding: 0 10px;
@@ -366,13 +371,7 @@
     }
     .btn-add:hover:not(:disabled) { border-color: var(--brand); color: var(--brand-text); background: var(--brand-soft); }
     .btn-add:hover:not(:disabled) .plus { transform: rotate(90deg); }
-    .adddrop {
-      display: none; position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 6px);
-      background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius);
-      box-shadow: var(--shadow-pop); padding: 8px; max-height: 280px; overflow: auto;
-      transform-origin: top center;
-    }
-    .adddrop.on { display: block; animation: menu-in .16s var(--ease); }
+    .adddrop { border-radius: var(--radius); padding: 8px; }
     .adddrop input { margin-bottom: 6px; height: 36px; }
     .aitem {
       display: flex; align-items: center; gap: 10px;
