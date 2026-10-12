@@ -1,1 +1,1 @@
-Corrige o menu de setor da impressora (Todos os pedidos / Só cozinha / Só caixa / Só bar) que abria por baixo do card "Adicionar impressora". Os menus agora abrem por cima de tudo, para cima quando não cabem embaixo, e fecham ao clicar fora ou no Esc.
+Cupom de entrega com QR Code do motoboy ("Motoboy: escaneie pra iniciar") e número do pedido em destaque. O QR abre a entrega só pelo app do motoboy logado e vale uma vez. O código de confirmação do cliente continua fora do papel. Backend antigo (sem QR) imprime o cupom como antes.

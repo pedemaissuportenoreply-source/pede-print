@@ -422,6 +422,33 @@ function normalizePayload(data) {
   }
 }
 
+// ── Pedido de marketplace (iFood/99Food) ──────────────────────────────────────
+// Bloco `marketplace` montado pelo backend (sem payload bruto). Ausente = pedido
+// próprio: o cupom sai IDÊNTICO ao de sempre. Campos opcionais e sanitizados.
+function marketplaceDe(rawData) {
+  const m = rawData && rawData.marketplace
+  if (!m || typeof m !== 'object') return null
+  const rotulo = limpoTexto(m.rotulo, 12).toUpperCase()
+  if (!rotulo) return null
+  const txt = (v, n) => (v != null && String(v).trim() ? limpoTexto(String(v), n) : null)
+  return {
+    rotulo,
+    displayId: txt(m.displayId, 20),
+    codigoInterno: txt(m.codigoInterno, 20),
+    tipo: m.tipo === 'RETIRADA' ? 'RETIRADA' : 'DELIVERY',
+    entregaPor: m.entregaPor === 'APP' || m.entregaPor === 'LOJA' ? m.entregaPor : null,
+    localizador: txt(m.localizador, 20),
+    telefone: txt(m.telefone, 20),
+    pagamento: txt(m.pagamento, 120),
+    pagoNoApp: m.pagoNoApp === true,
+  }
+}
+
+// "IFOOD #7456" (ou só "IFOOD" sem número).
+function tituloMarketplace(mkt) {
+  return mkt.rotulo + (mkt.displayId ? ' #' + mkt.displayId : '')
+}
+
 // ── Cabeçalho das vias de preparo ─────────────────────────────────────────────
 // UMA função para a via da COZINHA e a do BAR (SERVIR não imprime). Fonte:
 // `cabecalhoVia` montado pelo backend a partir do PEDIDO. Payload antigo (sem o
@@ -473,6 +500,18 @@ function cabecalhoDaVia(rawData, data) {
 
 // ── Receipt builder ────────────────────────────────────────────────────────────
 
+// QR do motoboy no cupom de entrega: só URL http(s) curta, sem espaços.
+function qrEntregaDe(rawData) {
+  const q = rawData && rawData.qrEntrega
+  if (!q || typeof q !== 'object') return null
+  const url = typeof q.url === 'string' ? q.url.trim() : ''
+  if (!/^https?:\/\/\S{4,250}$/.test(url)) return null
+  const rotulo = typeof q.rotulo === 'string' && q.rotulo.trim()
+    ? q.rotulo.trim().replace(/[^\x20-\x7E\u00C0-\u00FF]/g, '').slice(0, 48)
+    : 'Motoboy: escaneie pra iniciar'
+  return { url, rotulo }
+}
+
 // QR Code nativo ESC/POS — GS ( k, modelo 2, correção M, centralizado.
 // Usado pelo DANFE NFC-e (URL do QR vem pronta da SEFAZ via backend).
 function qrEscPos(texto, modulo = 5) {
@@ -522,6 +561,26 @@ function buildReceiptBuffer(rawData, cols) {
     return out.length ? out : ['']
   }
 
+  // Texto que não cabe na linha QUEBRA com recuo (nunca trunca). `valor` (opcional)
+  // vai alinhado à direita na ÚLTIMA linha. Cabendo numa linha só, a saída é
+  // idêntica ao row()/slice() de antes.
+  const linhasComValor = (texto, valor, recuo) => {
+    const t = String(texto)
+    const v = valor != null && valor !== '' ? String(valor) : ''
+    if (t.length + (v ? v.length + 1 : 0) <= cols) return [v ? row(t, v, cols) : t]
+    const ind = ' '.repeat(Math.min(recuo, Math.floor(cols / 2)))
+    const lead = (t.match(/^\s*/) || [''])[0]
+    const corpo = wrap(t.slice(lead.length), cols - Math.max(lead.length, ind.length))
+    const out = corpo.map((l, i) => (i === 0 ? lead : ind) + l)
+    if (v) {
+      const ult = out[out.length - 1]
+      if (ult.length + 1 + v.length <= cols) out[out.length - 1] = row(ult, v, cols)
+      else out.push(row('', v, cols))
+    }
+    return out
+  }
+  const mkt = marketplaceDe(rawData)
+
   // Rodapé de assinatura da marca — impresso em TODAS as vias, após o conteúdo
   // e ANTES do corte. Centralizado (ctr), fonte normal (sem negrito/grande).
   // ESC_INIT antes garante reset de alinhamento/ênfase herdada do conteúdo.
@@ -546,7 +605,13 @@ function buildReceiptBuffer(rawData, cols) {
   // Cabeçalho das vias de preparo (cozinha e bar): uma fonte só, do pedido.
   const cab = cabecalhoDaVia(rawData, data)
   const pedido     = 'PEDIDO #' + cab.numero
-  const destino = cab.destino
+  // Marketplace: o backend prefixa o destino com "IFOOD #id - " (p/ agente antigo);
+  // aqui o número do app sai em linha própria, grande — tira o prefixo do bloco.
+  const destino = (() => {
+    if (!mkt) return cab.destino
+    const pref = tituloMarketplace(mkt) + ' - '
+    return cab.destino.startsWith(pref) ? cab.destino.slice(pref.length) : cab.destino
+  })()
 
   // Pedido ALTERADO: rótulo ASCII da marca do item e linha de horário da alteração.
   const MARCA_TXT = { NOVO: '+NOVO', ALTERADO: 'ALTERADO', REMOVIDO: '-REMOVIDO' }
@@ -652,7 +717,10 @@ function buildReceiptBuffer(rawData, cols) {
         if (destacaObs) emitLine([INVERT_ON, BOLD_ON], '   >> ' + item.obs, false)
         else emitLine([], '   >> ' + item.obs, false)
       }
-      for (const addon of item.addons ?? []) emitLine([], comboIndent + '   + ' + addon, false)
+      for (const addon of item.addons ?? []) {
+        if (framed) { emitLine([], comboIndent + '   + ' + addon, false); continue }
+        for (const l of linhasComValor(comboIndent + '   + ' + addon, '', comboIndent.length + 5)) emitLine([], l, false)
+      }
       if (framed) p(ln('+' + '-'.repeat(cols - 2) + '+'))
       else p(ln('-'.repeat(cols)))
     }
@@ -665,6 +733,12 @@ function buildReceiptBuffer(rawData, cols) {
       // Sem o campo (payload antigo) segue 'VIA COZINHA'.
       p(BOLD_ON, ...ctrBig(String(data.viaTitulo || 'VIA COZINHA')))
       p(eq())
+      if (mkt) {
+        // Marketplace: número do app GRANDE + código interno menor (sem tel/localizador).
+        p(BOLD_ON, ...ctrBig(tituloMarketplace(mkt)))
+        if (mkt.codigoInterno) p(ln(ctr('Pede+ ' + mkt.codigoInterno)))
+        p(eq())
+      }
       if (alt) {
         p(BOLD_ON, ln(ctr(String(alt.titulo || 'PEDIDO ALTERADO'))), ESC_INIT)
         if (altQuando()) p(ln(ctr(altQuando())))
@@ -759,7 +833,7 @@ function buildReceiptBuffer(rawData, cols) {
 
   // ── VIA CLIENTE (DELIVERY) — ênfase nativa DR800 (bold/dupla-altura/sublinhado) ─
   function buildClientVia() {
-    console.log('[CLIENTE-DEBUG] buildClientVia | deliveryCode:', rawData.delivery_code ?? rawData.deliveryCode ?? '(sem)', '| deliveryAddress obj:', typeof rawData.deliveryAddress === 'object' && !!rawData.deliveryAddress, '| street:', da.street ?? '(sem)', '| bairro:', da.neighborhood ?? da.district ?? '(sem)', '| subtotal:', data.subtotal, '| total:', data.total, '| itens c/ subtotal:', (data.items ?? []).filter((i) => i.subtotal != null).length + '/' + (data.items ?? []).length, '| needsChange:', rawData.needsChange, '| trocoPara:', rawData.trocoPara ?? rawData.changeFor ?? '(sem)')
+    console.log('[CLIENTE-DEBUG] buildClientVia | deliveryAddress obj:', typeof rawData.deliveryAddress === 'object' && !!rawData.deliveryAddress, '| street:', da.street ?? '(sem)', '| bairro:', da.neighborhood ?? da.district ?? '(sem)', '| subtotal:', data.subtotal, '| total:', data.total, '| itens c/ subtotal:', (data.items ?? []).filter((i) => i.subtotal != null).length + '/' + (data.items ?? []).length, '| needsChange:', rawData.needsChange, '| trocoPara:', rawData.trocoPara ?? rawData.changeFor ?? '(sem)')
     const b = []
     const p = (...x) => b.push(...x)
     const divD   = () => p(eq())                       // divisor duplo ===
@@ -787,19 +861,34 @@ function buildReceiptBuffer(rawData, cols) {
     if (data.tenantCnpj)  p(ln(ctr('CNPJ: ' + String(data.tenantCnpj))))
 
     // 2) PEDIDO + ENTREGA (emoldurados, dupla-altura + bold)
-    framedTB('PEDIDO #' + (data.orderCode || '?'))
+    if (mkt) {
+      // Marketplace: "IFOOD #7456" em fonte dupla + "Pede+ D244" menor embaixo.
+      p(eq())
+      p(BOLD_ON, ...ctrBig(tituloMarketplace(mkt)))
+      p(ln(ctr('Pede+ ' + (mkt.codigoInterno || data.orderCode || '?'))))
+      p(eq())
+    } else {
+      // Número do pedido em DESTAQUE (fonte dupla): é o que o motoboy procura.
+      p(eq())
+      p(BOLD_ON, ...ctrBig('PEDIDO #' + (data.orderCode || '?')))
+      p(eq())
+    }
     if (alt) {
       framedTB(String(alt.titulo || 'PEDIDO ALTERADO'))
       if (altQuando()) p(ln(ctr(altQuando())))
     }
     // TIPO + DATA/HORA do pedido (condicional, null-safe)
-    if (data.serviceType) p(ln(ctr(String(data.serviceType))))
+    if (mkt) {
+      const tipoMkt = mkt.tipo === 'RETIRADA' ? 'RETIRADA'
+        : mkt.entregaPor === 'APP' ? 'ENTREGA ' + mkt.rotulo
+        : 'ENTREGA PELA LOJA'
+      p(BOLD_ON, ln(ctr(tipoMkt)), ESC_INIT)
+    } else if (data.serviceType) p(ln(ctr(String(data.serviceType))))
     if (date) p(ln(ctr(date + (time ? ' - ' + time : ''))))
-    // Código de entrega — aceita snake_case (pedido cru via emitOrder) e camelCase
-    // (contentJson do recibo). É EXATAMENTE o valor que o app do motoboy consulta
-    // em "Iniciar percurso" (DLV-XXXXXX); os 6 dígitos saem destacados no rodapé.
-    const deliveryCodeRaw = rawData.delivery_code ?? rawData.deliveryCode ?? null
-    if (deliveryCodeRaw) framedTB('ENTREGA ' + String(deliveryCodeRaw).toUpperCase())
+    // Código de entrega (DLV) é do CLIENTE: o cupom vai na sacola e o motoboy o
+    // leria. Nunca impresso — nem se um backend antigo ainda mandar o campo. O
+    // motoboy abre a entrega pelo NÚMERO do pedido (acima) e digita, na porta, o
+    // código que o cliente informar.
 
     // 3) CLIENTE
     lblB('CLIENTE')
@@ -807,6 +896,9 @@ function buildReceiptBuffer(rawData, cols) {
     if (cliente) p(ln(String(cliente)))
     const fone = fmtPhone(rawData.customer_phone ?? data.phone)
     if (fone) p(ln('Tel: ' + fone))
+    // Marketplace: telefone do app (0800) e localizador, como vieram.
+    if (mkt && mkt.telefone && !fone) p(ln('Tel: ' + mkt.telefone))
+    if (mkt && mkt.localizador) p(ln('Localizador: ' + mkt.localizador))
     if (data.cpf) p(ln('CPF: ' + String(data.cpf)))
     divS()
 
@@ -866,7 +958,7 @@ function buildReceiptBuffer(rawData, cols) {
         for (const extra of lines.slice(1)) p(ln(' '.repeat(dlvQtyW + 1) + extra))
         p(ln(row('', dlvNumCell(it.unit, it.total), cols)))
       }
-      if (it.obs) p(ln(('   >> ' + it.obs).slice(0, cols)))
+      if (it.obs) for (const l of linhasComValor('   >> ' + it.obs, '', 6)) p(ln(l))
       // Complementos: com preço unitário > 0 sai o valor alinhado na coluna TOTAL
       // ("+R$ 2,00"); grátis mantém só "+ 1x Nome". Rastreabilidade — o total do
       // pedido já contempla o adicional (preço embutido no unitPrice do item).
@@ -874,8 +966,10 @@ function buildReceiptBuffer(rawData, cols) {
       it.addons.forEach((addon, i) => {
         const det = dlvDetail?.[i]
         const label = ('   + ' + addon)
-        if (det && det.price > 0) p(ln(row(label, dlvNumCell('', '+' + fmtBRL(det.price)), cols)))
-        else p(ln(label.slice(0, cols)))
+        // Marketplace: o unitário da linha JÁ inclui os complementos (preço do
+        // app) — sem "+R$" para a conta impressa fechar com o subtotal.
+        const valor = det && det.price > 0 && !mkt ? dlvNumCell('', '+' + fmtBRL(det.price)).trimStart() : ''
+        for (const l of linhasComValor(label, valor, 5)) p(ln(l))
       })
     }
     divS()
@@ -931,9 +1025,13 @@ function buildReceiptBuffer(rawData, cols) {
     // pagamento intacta; status em dupla-altura p/ saltar.
     const ps = String(rawData.paymentStatus ?? data.paymentStatus ?? '').toUpperCase()
     const isPaid = /PAGO|PAID|APROVAD|CONFIRMAD/.test(ps)
-    const statusTxt = isPaid ? 'PAGO' : 'A PAGAR NA ENTREGA'
+    const statusTxt = mkt && mkt.pagoNoApp ? 'PAGO NO ' + mkt.rotulo : (isPaid ? 'PAGO' : 'A PAGAR NA ENTREGA')
     const pg = rawData.formaPagamento ?? data.paymentMethod
-    const formaTxt = pg ? 'FORMA: ' + String(pg).toUpperCase() : null
+    // Marketplace pago no app: métodos ("Credito Visa + Credito Master - online")
+    // no lugar de "FORMA: PAGO_IFOOD".
+    const formaTxt = mkt && mkt.pagoNoApp
+      ? (mkt.pagamento ? semAcento(mkt.pagamento).replace(/\s+—\s+/g, ' - ') : null)
+      : (pg ? 'FORMA: ' + String(pg).toUpperCase() : null)
     const isCash = /DINHEIRO|CASH|ESPECIE/.test(String(pg ?? '').toUpperCase())
     const needsChange = !!rawData.needsChange
     const trocoPara = Number(rawData.trocoPara ?? rawData.changeFor ?? 0)
@@ -968,7 +1066,7 @@ function buildReceiptBuffer(rawData, cols) {
     } else {
       p(eq())
       p(BOLD_ON, TALL_ON, ln(ctr(statusTxt)), ESC_INIT)
-      if (formaTxt) p(BOLD_ON, ln(ctr(formaTxt)), ESC_INIT)
+      if (formaTxt) for (const fl of wrap(formaTxt, cols)) p(BOLD_ON, ln(ctr(fl)), ESC_INIT)
       if (trocoTxt) p(BOLD_ON, ln(ctr(trocoTxt)), ESC_INIT)
       p(eq())
       blank()
@@ -987,22 +1085,18 @@ function buildReceiptBuffer(rawData, cols) {
       if (data.previsao)   p(ln('Previsao: ' + String(data.previsao)))
     }
 
-    // CODIGO DA ENTREGA — destaque no fim do slip p/ o balcao destacar e informar
-    // ao entregador, que digita os 6 digitos em "Iniciar percurso" no app. So na
-    // via cliente do delivery; double-width (ctrBig) p/ leitura facil. ASCII puro.
-    // Emoldurado com "===" (sem reverso GS B).
-    if (deliveryCodeRaw) {
-      const codeDigits = String(deliveryCodeRaw).replace(/\D/g, '')
-      const codeShown = (codeDigits.length >= 4 ? codeDigits : String(deliveryCodeRaw).toUpperCase()).split('').join(' ')
-      blank()
-      p(eq())
-      p(BOLD_ON, ln(ctr('CODIGO DA ENTREGA')), ESC_INIT)
-      p(...ctrBig(codeShown))   // número em destaque: dupla largura+altura, centrado
-      p(BOLD_ON, ln(ctr('Informe ao entregador')), ESC_INIT)
-      p(eq())
-      blank()
-    }
+    // Nenhum código no papel: nem o de entrega do cliente (DLV/app) nem o de
+    // coleta do marketplace. Payload antigo com esses campos é ignorado.
     divD()
+
+    // QR do MOTOBOY (backend >= lote QR): URL com token opaco de uso único da
+    // entrega — não é o código do cliente. Sem o campo (payload antigo) → sem QR.
+    const qrMoto = qrEntregaDe(rawData)
+    if (qrMoto) {
+      p(BOLD_ON, ln(ctr(qrMoto.rotulo)), ESC_INIT)
+      p(qrEscPos(qrMoto.url, 6))
+      divD()
+    }
 
     // 8) RODAPE (centrado) — via cliente é SOMENTE texto: sem QR, sem raster.
     // A URL pública de acompanhamento (reviewUrl) segue no payload p/ outros
