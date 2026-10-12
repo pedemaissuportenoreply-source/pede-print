@@ -122,11 +122,12 @@ let COLS = 48
 // Mínimo de LF para o papel avançar até a guilhotina antes do corte parcial.
 const FEED_CUT = Buffer.from('\n'.repeat(4), 'ascii')
 
-// Bytes padrão sob outro nome: buildReceiptBuffer SOMBREIA os nomes curtos
-// (BIG_ON, CUT, ...) quando a família é Daruma. Genérica = estes, intactos.
-const _STD = { BIG_ON, TALL_ON, FONT_BOLD, FONT_TALL_BOLD, FONT_BIG_BOLD, ESC_INIT, FEED_CUT, UNDER_OFF }
+// Bytes padrão sob outro nome: buildReceiptBuffer SOMBREIA ESC_INIT/FEED_CUT/CUT
+// quando a família é Daruma. Genérica = estes, intactos.
+const _STD = { ESC_INIT, FEED_CUT }
 const _cutAtual = () => CUT
-const _invertSupportedStd = () => invertSupported()
+// Fim de estilo SEM reset (Daruma): tamanho normal, sem negrito, sem sublinhado.
+const RESET_ESTILO = Buffer.from([0x1b, 0x21, 0x00, 0x1b, 0x45, 0x00, 0x1b, 0x2d, 0x00])
 
 // Texto codificado no ENCODING do perfil ativo (iconv), casado com o ESC t n do
 // mesmo perfil (charset da ROM) — par verificado p/ acentos PT-BR corretos. Ex.:
@@ -539,21 +540,15 @@ function qrEscPos(texto, modulo = 5) {
 
 function buildReceiptBuffer(rawData, cols, perfil = {}) {
   const data = normalizePayload(rawData)
-  // ── Família Daruma: sombreia os bytes de tamanho/corte/reset (ver printer-familias.js).
-  // Qualquer outra família usa os bytes de sempre (saída byte-a-byte igual).
+  // ── Família Daruma: sombreia SÓ o reset do meio do documento e o corte (ver
+  // printer-familias.js). Qualquer outra família usa os bytes de sempre.
   const dm = perfil.familia === 'daruma'
   const fam = FAMILIAS[perfil.familia] || FAMILIAS.generica
-  // ESC @ zera o ESC t: na Daruma o reset já reaplica a code page do perfil.
-  const ESC_INIT = dm ? Buffer.concat([_STD.ESC_INIT, charset()]) : _STD.ESC_INIT
-  // Sem tamanho duplo na Daruma: destaque = negrito, na largura normal.
-  const BIG_ON = dm ? BOLD_ON : _STD.BIG_ON
-  const TALL_ON = dm ? BOLD_ON : _STD.TALL_ON
-  const FONT_BOLD = dm ? BOLD_ON : _STD.FONT_BOLD
-  const FONT_TALL_BOLD = dm ? BOLD_ON : _STD.FONT_TALL_BOLD
-  const FONT_BIG_BOLD = dm ? BOLD_ON : _STD.FONT_BIG_BOLD
-  const invertSupported = () => (dm ? false : _invertSupportedStd())
-  // ESC - 0 tem byte nulo (o spooler corta a string): na Daruma o reset desliga o sublinhado.
-  const UNDER_OFF = dm ? ESC_INIT : _STD.UNDER_OFF
+  // ESC @ só no INÍCIO de cada via (INICIO_DOC). No meio, a Daruma desliga estilo
+  // e tamanho com ESC ! 0 / ESC E 0 / ESC - 0 — nunca com ESC @, que nela limpava
+  // o que ainda estava no buffer (o cabeçalho sumia). Só na COM (NUL é ok).
+  const INICIO_DOC = _STD.ESC_INIT
+  const ESC_INIT = dm ? RESET_ESTILO : _STD.ESC_INIT
   // Corte: Daruma = feed longo + GS V 1 + ESC m. noCut = separador visível + feed.
   const noCutBuild = rawData._receiptOpts?.noCut === true
   const FEED_CUT = !dm
@@ -616,7 +611,7 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
   // ESC_INIT antes garante reset de alinhamento/ênfase herdada do conteúdo.
   const brandFooter = () => [ESC_INIT, ln(''), ln(ctr('Emitido por Pede+')), ln(ctr('pedeplus.com.br')), ln('')]
 
-  const HALF = dm ? cols : Math.floor(cols / 2) // colunas úteis em double-width (48/2 = 24)
+  const HALF = Math.floor(cols / 2) // colunas úteis em double-width (48/2 = 24)
   const ctrBig = (str) => {
     const s = String(str)
     if (s.length <= HALF) {
@@ -756,7 +751,7 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
     }
 
     const header = () => {
-      p(ESC_INIT, charset())
+      p(INICIO_DOC, charset())
       p(BOLD_ON, ...ctrBig(data.tenantName || 'ESTABELECIMENTO'))
       p(eq())
       // VIA DO BAR reusa este layout: o backend manda `viaTitulo` ('VIA BAR').
@@ -881,7 +876,7 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
     // Emoldurado com valor à direita (row preenche 48 cols), dupla-altura+bold.
     const framedRowTB = (l, v) => { p(eq()); p(BOLD_ON, TALL_ON, ln(row(l, v)), ESC_INIT); p(eq()) }
 
-    p(ESC_INIT, charset())
+    p(INICIO_DOC, charset())
 
     // 1) ESTABELECIMENTO (topo, centrado)
     if (data.tenantName) p(BOLD_ON, ln(ctr(String(data.tenantName))), ESC_INIT)
@@ -1171,7 +1166,7 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
       if (d.length === 10) return `${d.slice(0, 2)} ${d.slice(2, 6)}-${d.slice(6)}`
       return String(v ?? '').trim()
     }
-    p(ESC_INIT, charset())
+    p(INICIO_DOC, charset())
     if (logoBuf) p(logoBuf)
 
     // Header — nome em bold + dupla-altura, centrado; respiro antes do endereco.
@@ -1477,7 +1472,7 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
     const b = []
     const p = (...x) => b.push(...x)
     const blank = () => p(ln(''))
-    p(ESC_INIT, charset())
+    p(INICIO_DOC, charset())
 
     // Faixa RETIRADA: e o que o atendente enxerga de longe no maco de etiquetas.
     p(eq())
@@ -1559,7 +1554,7 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
     const b = []
     const p = (...x) => b.push(...x)
     const L = limpoTexto
-    p(ESC_INIT, charset())
+    p(INICIO_DOC, charset())
 
     // Header do estabelecimento (mesmo bloco do comprovante)
     p(BOLD_ON, ln(ctr(L(rawData.tenantName ?? data.tenantName ?? 'ESTABELECIMENTO', cols))), ESC_INIT)
@@ -1710,7 +1705,7 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
       return d.length === 14 ? d.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5') : d
     }
     const TPAG = { '01': 'Dinheiro', '03': 'Cartao Credito', '04': 'Cartao Debito', '05': 'Credito Loja', '10': 'Vale Alimentacao', '11': 'Vale Refeicao', '17': 'PIX', '20': 'PIX', '99': 'Outros' }
-    p(ESC_INIT, charset())
+    p(INICIO_DOC, charset())
     p(BOLD_ON, ln(ctr(L(emit.nome || 'ESTABELECIMENTO', cols))), ESC_INIT)
     if (emit.cnpj) p(ln(ctr('CNPJ: ' + cnpjFmt(emit.cnpj))))
     for (const linha of wrap(L(emit.endereco || '', cols * 2), cols)) if (linha) p(ln(ctr(linha)))
@@ -2013,9 +2008,11 @@ function buildPaginaTeste(cols, familia, noCut) {
   const fam = FAMILIAS[familia] || FAMILIAS.generica
   const dm = familia === 'daruma'
   const regua = Array.from({ length: cols }, (_, i) => String((i + 1) % 10)).join('')
+  // ESC @ só no início; no meio a Daruma volta ao normal sem reset.
+  const R = dm ? [RESET_ESTILO] : [ESC_INIT, charset()]
   const seg = [
     ESC_INIT, charset(),
-    BOLD_ON, ln('PAGINA DE TESTE - ' + fam.nome), ESC_INIT, charset(),
+    BOLD_ON, ln('PAGINA DE TESTE - ' + fam.nome), ...R,
     ln('Colunas: ' + cols + ' | ' + ENCODING + ' / ESC t ' + CODEPAGE_N),
     ln('='.repeat(cols)),
     ln(regua),
@@ -2023,8 +2020,8 @@ function buildPaginaTeste(cols, familia, noCut) {
     ln('Acentos: Porção Camarão Açaí Pão Café Pêssego'),
     ln('-'.repeat(cols)),
     ...(fam.tamanhoDuplo
-      ? [BIG_ON, ln('DUPLO'), ESC_INIT, charset()]
-      : [BOLD_ON, ln('Tamanho duplo desligado neste perfil'), ESC_INIT, charset()]),
+      ? [BIG_ON, ln('DUPLO'), ...R]
+      : [BOLD_ON, ln('Tamanho duplo desligado neste perfil'), ...R]),
     ln('='.repeat(cols)),
     ...(fam.qrMotoboy
       ? [qrEscPos('https://app.pedeplus.com.br/teste-impressora', 6), ln(ctr0('QR de teste', cols))]

@@ -13,10 +13,10 @@
 //   • Corte GS V m n (função B, m=65/66 — o que o catálogo manda) é ignorado.
 //     Aceita GS V 1 (função A, parcial, sem avanço) e ESC m (corte nativo
 //     Daruma); como a função A não avança, vai FEED de 6 linhas antes.
-//   • Tamanho duplo por ESC ! (0x10/0x30) não volta com ESC @: as linhas
-//     seguintes herdavam a largura dupla — separador com outra largura, coluna
-//     da direita deslocada, texto longo cortado. Daruma sai SEM tamanho duplo
-//     (destaque por negrito) e com toda linha dentro das colunas do perfil.
+//   • ESC @ só no INÍCIO de cada via. No meio do documento o fim de estilo é
+//     ESC ! 0 / ESC E 0 / ESC - 0 (tamanho duplo e negrito como na 1.7.6). O
+//     ESC @ no meio (1.7.7/1.7.8 ainda com ESC t junto) apagava o cabeçalho.
+//   • Hora/Data empilhadas e textos longos (previsão) quebrando dentro das colunas.
 const FAMILIAS = {
   generica: {
     nome: 'Genérica ESC/POS', qr: 'nativo', qrMotoboy: true, tamanhoDuplo: true, reverso: true,
@@ -39,7 +39,7 @@ const FAMILIAS = {
     colunas: { 80: { A: 48, B: 64 }, 58: { A: 32, B: 42 } },
   },
   daruma: {
-    nome: 'Daruma', qr: 'nenhum', qrMotoboy: false, tamanhoDuplo: false, reverso: false,
+    nome: 'Daruma', qr: 'nenhum', qrMotoboy: false, tamanhoDuplo: true, reverso: true,
     corte: [0x1d, 0x56, 0x01, 0x1b, 0x6d], // GS V 1 + ESC m — sem byte nulo
     feedAntesCorte: 6,
     colunas: { 80: { A: 48 }, 58: { A: 32 } },

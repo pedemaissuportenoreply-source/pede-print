@@ -1,6 +1,6 @@
 'use strict'
 // Perfil Daruma (DR700/DR800/DR800H): sem QR do motoboy (só o número), corte GS V 1 + ESC m com
-// feed antes, sem tamanho duplo e separadores na largura do perfil. Qualquer
+// feed antes, ESC @ só no início (fim de estilo por ESC ! 0) e separadores na largura do perfil. Qualquer
 // outra impressora fica no Genérico — bytes IGUAIS aos de antes (snapshot).
 process.env.TZ = 'America/Fortaleza'
 const test = require('node:test')
@@ -39,7 +39,8 @@ function comandos(buf) {
   return out
 }
 // O que a Daruma aceita no modo dela (o resto = não suportado).
-const DARUMA_OK = new Set(['ESC @', 'ESC E', 'ESC a', 'ESC t', 'ESC -', 'ESC 3', 'ESC 2', 'ESC m', 'GS v0', 'GS V 1'])
+// ESC ! e GS B: os mesmos da 1.7.6 nela (tamanho duplo/reverso).
+const DARUMA_OK = new Set(['ESC @', 'ESC E', 'ESC !', 'ESC a', 'ESC t', 'ESC -', 'ESC 3', 'ESC 2', 'ESC m', 'GS B', 'GS V 1'])
 
 const texto = (buf) => buf.toString('latin1')
   .replace(/\x1dv0[\s\S]{4}/g, '')
@@ -49,7 +50,8 @@ const linhasVisiveis = (buf) => {
   if (buf.qrRaster) b = Buffer.concat([buf.subarray(0, buf.qrRaster.start), buf.subarray(buf.qrRaster.end)])
   return b.toString('latin1')
     .replace(/\x1b[@2m]/g, '')
-    .replace(/\x1b[Eta\-3]./g, '')
+    .replace(/\x1b[Eta\-3!]./g, '')
+    .replace(/\x1dB./g, '')
     .replace(/\x1dV\x01/g, '')
     .split('\n')
 }
@@ -103,8 +105,7 @@ test('Daruma: corte GS V 1 + ESC m com 6 linhas de feed antes, nas duas vias', (
   for (const via of [r.kitchen, r.client]) {
     assert.ok(via.subarray(via.length - fim.length).equals(fim))
     assert.ok(!via.includes(Buffer.from([0x1d, 0x56, 0x41])) && !via.includes(Buffer.from([0x1d, 0x56, 0x42])), 'sem GS V função B')
-    const semRaster = via.qrRaster ? Buffer.concat([via.subarray(0, via.qrRaster.start), via.subarray(via.qrRaster.end)]) : via
-    assert.ok(!semRaster.includes(0x00), 'sem byte nulo fora do raster')
+    assert.deepStrictEqual([via.indexOf(Buffer.from([0x1b, 0x40])), via.lastIndexOf(Buffer.from([0x1b, 0x40]))], [0, 0], 'ESC @ só no início')
   }
 })
 
@@ -117,12 +118,10 @@ test('Daruma noCut: sem corte, com separador visível + feed entre as vias', () 
   }
 })
 
-test('Daruma: sem tamanho duplo/reverso; separadores na largura do perfil e nenhuma linha passa das colunas', () => {
+test('Daruma: separadores na largura do perfil e nenhuma linha passa das colunas', () => {
   for (const cols of [48, 32]) {
     const r = buildReceiptBuffer(F.delivery, cols, DM)
     for (const via of [r.kitchen, r.client]) {
-      assert.ok(!/\x1b!/.test(via.toString('latin1')), 'sem ESC !')
-      assert.ok(!via.includes(Buffer.from([0x1d, 0x42])), 'sem GS B')
       const linhas = linhasVisiveis(via)
       for (const l of linhas.filter((x) => /^[=-]{8,}$/.test(x) || /^\+-+\+$/.test(x))) assert.strictEqual(l.length, cols, `separador "${l}"`)
       for (const l of linhas) assert.ok(l.length <= cols, `linha longa (${l.length}): "${l}"`)
@@ -177,7 +176,8 @@ test('Página de teste: régua e corte do perfil; Daruma sem QR', () => {
   assert.ok(texto(dm).includes('QR desligado neste perfil'))
   assert.ok(dm.subarray(dm.length - 5).equals(Buffer.from([0x1d, 0x56, 0x01, 0x1b, 0x6d])))
   assert.ok(texto(dm).includes('123456789012345678901234567890123456789012345678'))
-  assert.ok(texto(dm).includes('Tamanho duplo desligado'))
+  assert.deepStrictEqual([dm.indexOf(Buffer.from([0x1b, 0x40])), dm.lastIndexOf(Buffer.from([0x1b, 0x40]))], [0, 0], 'ESC @ só no início')
+  assert.ok(texto(dm).includes('DUPLO') && dm.includes(Buffer.from([0x1b, 0x21, 0x00])))
   const gen = buildPaginaTeste(32, 'generica', true)
   assert.ok(texto(gen).includes('DUPLO'))
   assert.ok(gen.includes(Buffer.from([0x1d, 0x28, 0x6b])), 'Genérico com QR nativo')

@@ -1,12 +1,12 @@
 {
   "name": "pede-print",
-  "version": "1.7.8",
+  "version": "1.7.9",
   "description": "Agente de impressão automática para o Pede+",
   "author": "Pede+ <jnrodrigues38@gmail.com>",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/kitchen-guard.test.js test/fechamento-caixa.test.js test/vias-cabecalho.test.js test/marketplace-cupom.test.js test/qr-entrega-cupom.test.js test/daruma-perfil.test.js",
+    "test": "node --test test/kitchen-guard.test.js test/fechamento-caixa.test.js test/vias-cabecalho.test.js test/marketplace-cupom.test.js test/qr-entrega-cupom.test.js test/daruma-perfil.test.js test/daruma-golden.test.js",
     "test-logo": "node test-logo.js",
     "test-codepage": "node test-codepage.js",
     "test-inverted": "node test-inverted.js",
