@@ -1209,7 +1209,9 @@ ipcMain.handle('test-print', async (_, { printerName, cols, type, codepage, enco
   const { printTestCupom } = require('./printer')
   const config = effectiveConfig()
   // Teste por impressora: usa o PERFIL do card (corte/codepage corretos) quando enviado.
-  const profile = profileId != null ? require('./printer-routing').profileById(Number(profileId)) : null
+  const routingMod = require('./printer-routing')
+  // Sem perfil escolhido: Daruma pelo nome (mesma auto-detecção do roteamento).
+  const profile = profileId != null ? routingMod.profileById(Number(profileId)) : routingMod.suggestByName(printerName)
   await printTestCupom(
     printerName || _printerTarget(config),
     cols || (profile && profile.columns) || DEFAULT_COLS,

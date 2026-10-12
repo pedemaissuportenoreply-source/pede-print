@@ -21,6 +21,7 @@
 const fs = require('fs')
 const path = require('path')
 const pp = require('./printer-profiles')
+const { nomeEhDaruma } = require('./printer-familias')
 
 const SETORES = ['COZINHA', 'CAIXA', 'BAR']
 
@@ -54,12 +55,15 @@ function listWindowsPrinters() {
   }
 }
 
-// Dica de perfil por nome (Windows não tem VID/PID): procura a marca no nome.
-function suggestByName(name) {
-  const n = String(name || '').toLowerCase()
-  if (!n) return null
-  const cat = pp.getCatalog()
-  return cat.find((p) => p.brand && !p.isGeneric && n.includes(String(p.brand).toLowerCase())) || null
+// Dica de perfil por nome (Windows não tem VID/PID). SÓ a Daruma é auto-detectada
+// pelo nome ("DARUMA"/"DR800"/"DR700"); qualquer outra fica no Genérico (a saída
+// de sempre) — Elgin/Epson/Bematech só por escolha manual no card.
+function suggestByName(name, { soMarca = false } = {}) {
+  // Fila do Windows: como antes, só com a marca no nome (perfil da fila não muda).
+  if (soMarca ? !/daruma/i.test(String(name || '')) : !nomeEhDaruma(name)) return null
+  const cat = pp.getCatalog().filter((p) => /daruma/i.test(String(p.brand || p.name || '')))
+  const dr700 = /dr[\s-]?700/i.test(String(name))
+  return cat.find((p) => (dr700 ? /700/ : /800/).test(p.name)) || cat[0] || null
 }
 
 // Enumera TODOS os alvos (qualquer marca). NUNCA exclui por VID/PID.
@@ -88,7 +92,7 @@ async function detectTargets() {
   for (const w of listWindowsPrinters()) {
     const dk = windowsKey(w.name)
     if (targets.some((t) => t.deviceKey === dk)) continue
-    const profile = suggestByName(w.name) || null
+    const profile = suggestByName(w.name, { soMarca: true }) || null
     targets.push({
       deviceKey: dk, kind: 'windows', target: w.name,
       label: w.name + ' (Windows)',
@@ -204,8 +208,13 @@ function _applyOverride(base, override) {
 // Perfil de um alvo: mapeado pelo usuário > match VID/PID > genérico, com override
 // manual aplicado por cima (quando o card ativou o Ajuste avançado).
 function _profileForEntry(entry, target) {
+  // Config antiga sem perfil: Daruma se o nome casar, senão Genérico.
+  const nome = [entry && entry.label, entry && entry.target, target && target.target, target && target.label, target && target.manufacturer]
+    .filter(Boolean).join(' ')
   const base = profileById(entry && entry.profileId)
     || (target && pp.matchProfile(target.vendorId, target.productId))
+    // Fila do Windows (driver) fica como sempre: sem promoção por nome aqui.
+    || (((entry && entry.kind) || (target && target.kind)) === 'windows' ? null : suggestByName(nome))
     || pp.genericProfile()
   return _applyOverride(base, entry && entry.override)
 }
@@ -378,6 +387,6 @@ module.exports = {
   SETORES, configPath, serialKey, windowsKey,
   detectTargets, listWindowsPrinters,
   loadConfig, saveConfig, ensureConfig,
-  profileById, getTargets, setTargets, activeKeys, configuredActiveKeys,
+  profileById, suggestByName, getTargets, setTargets, activeKeys, configuredActiveKeys,
   resolveForSetor, resolveAllForSetor, expectedForSetor, resolveDefault, resolveByKey, reResolveTarget, logMapping, init,
 }

@@ -9,7 +9,8 @@ function nodePrinter() {
 }
 const iconv = require('iconv-lite')
 const { isComPort, sendToComPort } = require('./src/serial-print')
-const { buildLogoBands, sendLogoBands } = require('./src/logo')
+const { buildLogoBands, sendLogoBands, buildQrBands, sendQrBands } = require('./src/logo')
+const { FAMILIAS, familiaDe } = require('./printer-familias')
 
 // Logo raster na COM (DR800) sai como lixo — desabilitado por padrão. Só liga
 // com confirmação explícita: PEDE_LOGO_ALLOW_RASTER=1.
@@ -120,6 +121,12 @@ let COLS = 48
 
 // Mínimo de LF para o papel avançar até a guilhotina antes do corte parcial.
 const FEED_CUT = Buffer.from('\n'.repeat(4), 'ascii')
+
+// Bytes padrão sob outro nome: buildReceiptBuffer SOMBREIA os nomes curtos
+// (BIG_ON, CUT, ...) quando a família é Daruma. Genérica = estes, intactos.
+const _STD = { BIG_ON, TALL_ON, FONT_BOLD, FONT_TALL_BOLD, FONT_BIG_BOLD, ESC_INIT, FEED_CUT, UNDER_OFF }
+const _cutAtual = () => CUT
+const _invertSupportedStd = () => invertSupported()
 
 // Texto codificado no ENCODING do perfil ativo (iconv), casado com o ESC t n do
 // mesmo perfil (charset da ROM) — par verificado p/ acentos PT-BR corretos. Ex.:
@@ -530,8 +537,33 @@ function qrEscPos(texto, modulo = 5) {
   ])
 }
 
-function buildReceiptBuffer(rawData, cols) {
+function buildReceiptBuffer(rawData, cols, perfil = {}) {
   const data = normalizePayload(rawData)
+  // ── Família Daruma: sombreia os bytes de tamanho/corte/reset (ver printer-familias.js).
+  // Qualquer outra família usa os bytes de sempre (saída byte-a-byte igual).
+  const dm = perfil.familia === 'daruma'
+  const fam = FAMILIAS[perfil.familia] || FAMILIAS.generica
+  // ESC @ zera o ESC t: na Daruma o reset já reaplica a code page do perfil.
+  const ESC_INIT = dm ? Buffer.concat([_STD.ESC_INIT, charset()]) : _STD.ESC_INIT
+  // Sem tamanho duplo na Daruma: destaque = negrito, na largura normal.
+  const BIG_ON = dm ? BOLD_ON : _STD.BIG_ON
+  const TALL_ON = dm ? BOLD_ON : _STD.TALL_ON
+  const FONT_BOLD = dm ? BOLD_ON : _STD.FONT_BOLD
+  const FONT_TALL_BOLD = dm ? BOLD_ON : _STD.FONT_TALL_BOLD
+  const FONT_BIG_BOLD = dm ? BOLD_ON : _STD.FONT_BIG_BOLD
+  const invertSupported = () => (dm ? false : _invertSupportedStd())
+  // ESC - 0 tem byte nulo (o spooler corta a string): na Daruma o reset desliga o sublinhado.
+  const UNDER_OFF = dm ? ESC_INIT : _STD.UNDER_OFF
+  // Corte: Daruma = feed longo + GS V 1 + ESC m. noCut = separador visível + feed.
+  const noCutBuild = rawData._receiptOpts?.noCut === true
+  const FEED_CUT = !dm
+    ? _STD.FEED_CUT
+    : noCutBuild
+      ? Buffer.concat([iconv.encode('\n' + '- '.repeat(Math.floor(cols / 2)).trimEnd() + '\n', 'ascii'), Buffer.from('\n'.repeat(4), 'ascii')])
+      : Buffer.from('\n'.repeat(fam.feedAntesCorte), 'ascii')
+  const CUT = dm ? Buffer.from(fam.corte) : _cutAtual()
+  // QR em raster (Daruma): bandas GS v 0; na COM elas vão pelo sender de raster.
+  let qrRaster = null
   // Logo só existe quando habilitado e já convertido (apenas comprovante de pagamento)
   const logoBuf = Buffer.isBuffer(rawData._logoBuffer) ? rawData._logoBuffer : null
   console.log('[printer] build | type:', rawData._printType ?? rawData.type ?? 'payment', '| order:', data.orderCode, '| items:', data.items.length, '| logo:', !!logoBuf, '| enc:', ENCODING, '| codepage(ESC t n):', CODEPAGE_N)
@@ -586,7 +618,7 @@ function buildReceiptBuffer(rawData, cols) {
   // ESC_INIT antes garante reset de alinhamento/ênfase herdada do conteúdo.
   const brandFooter = () => [ESC_INIT, ln(''), ln(ctr('Emitido por Pede+')), ln(ctr('pedeplus.com.br')), ln('')]
 
-  const HALF = Math.floor(cols / 2) // colunas úteis em double-width (48/2 = 24)
+  const HALF = dm ? cols : Math.floor(cols / 2) // colunas úteis em double-width (48/2 = 24)
   const ctrBig = (str) => {
     const s = String(str)
     if (s.length <= HALF) {
@@ -773,7 +805,12 @@ function buildReceiptBuffer(rawData, cols) {
       }
       if (cab.cliente && showCliente) p(ln('Cliente: ' + String(cab.cliente).slice(0, cols - 9)))
       const { date: dataVia, time: horaVia } = fmtDateParts(cab.criadoEm)
-      if (showHora) {
+      if (showHora && dm) {
+        // Daruma: rótulos empilhados, mesma coluna (sem depender de alinhar à direita).
+        p(ln('Tipo: ' + cab.tipo))
+        p(ln('Hora: ' + horaVia))
+        p(ln('Data: ' + dataVia))
+      } else if (showHora) {
         p(ln(row('Tipo: ' + cab.tipo, 'Hora: ' + horaVia)))
         p(ln('Data: ' + dataVia))
       } else {
@@ -1081,8 +1118,14 @@ function buildReceiptBuffer(rawData, cols) {
     // Entregador + Previsao de entrega (condicionais)
     if (data.entregador || data.previsao) {
       divS()
-      if (data.entregador) p(ln('Entregador: ' + String(data.entregador)))
-      if (data.previsao)   p(ln('Previsao: ' + String(data.previsao)))
+      if (dm) {
+        // Daruma: quebra em vez de passar da coluna (a impressora cortava a linha).
+        if (data.entregador) for (const l of linhasComValor('Entregador: ' + String(data.entregador), null, 2)) p(ln(l))
+        if (data.previsao)   for (const l of linhasComValor('Previsao: ' + String(data.previsao), null, 2)) p(ln(l))
+      } else {
+        if (data.entregador) p(ln('Entregador: ' + String(data.entregador)))
+        if (data.previsao)   p(ln('Previsao: ' + String(data.previsao)))
+      }
     }
 
     // Nenhum código no papel: nem o de entrega do cliente (DLV/app) nem o de
@@ -1092,7 +1135,15 @@ function buildReceiptBuffer(rawData, cols) {
     // QR do MOTOBOY (backend >= lote QR): URL com token opaco de uso único da
     // entrega — não é o código do cliente. Sem o campo (payload antigo) → sem QR.
     const qrMoto = qrEntregaDe(rawData)
-    if (qrMoto) {
+    if (qrMoto && dm) {
+      // Daruma: GS ( k não existe — QR em raster (GS v 0), rótulo e número embaixo.
+      const q = buildQrBands(qrMoto.url)
+      qrRaster = { buf: q.inline, bands: q.bands, widthBytes: q.widthBytes }
+      p(q.inline, charset())
+      p(BOLD_ON, ln(ctr(qrMoto.rotulo)), ESC_INIT)
+      p(BOLD_ON, ln(ctr('PEDIDO #' + (data.orderCode || '?'))), ESC_INIT)
+      divD()
+    } else if (qrMoto) {
       p(BOLD_ON, ln(ctr(qrMoto.rotulo)), ESC_INIT)
       p(qrEscPos(qrMoto.url, 6))
       divD()
@@ -1724,7 +1775,19 @@ function buildReceiptBuffer(rawData, cols) {
   const isReceipt =!isDelivery && (rawData._printType === 'receipt' || rawData._via === 'cliente'
     || rawData.type === 'payment')
   // Buffer.concat nunca recebe null/undefined
-  const concat = (segs) => Buffer.concat(segs.filter(Buffer.isBuffer))
+  const concat = (segs) => {
+    const bufs = segs.filter(Buffer.isBuffer)
+    const out = Buffer.concat(bufs)
+    // Marca onde está o QR raster: na COM o trecho vai pelo sender de raster.
+    if (qrRaster) {
+      let off = 0
+      for (const x of bufs) {
+        if (x === qrRaster.buf) { out.qrRaster = { start: off, end: off + x.length, bands: qrRaster.bands, widthBytes: qrRaster.widthBytes }; break }
+        off += x.length
+      }
+    }
+    return out
+  }
   // Relatorio de caixa: tem prioridade e nunca usa o template de pedido/pagamento.
   // Reimpressão manual (ex.: botão "Recibo" do histórico): só a via do cliente,
   // NUNCA a via cozinha. O fluxo de criação do pedido não envia esta flag.
@@ -1801,9 +1864,20 @@ function _enqueue(fn, target) {
 }
 
 // Envio efetivo de UM buffer (sem enfileirar) — usado dentro de _enqueue.
+async function _printViaSerialComQr(comPort, buf) {
+  const { start, end, bands, widthBytes } = buf.qrRaster
+  console.log('[printRaw] COM com QR raster | bandas:', bands.length)
+  await printViaSerial(comPort, buf.subarray(0, start))
+  await _comDelay(200)
+  await sendQrBands(comPort, bands, { widthBytes })
+  await _comDelay(200)
+  await printViaSerial(comPort, buf.subarray(end))
+}
+
 function _sendRawNow(printerNameOrPort, buf) {
   if (!printerNameOrPort) return Promise.reject(new Error('Impressora nao configurada'))
   if (isComPort(String(printerNameOrPort))) {
+    if (buf && buf.qrRaster) return _printViaSerialComQr(printerNameOrPort.trim(), buf)
     console.log('[printRaw] usando serial direto chunked (bypass spooler)')
     return printViaSerial(printerNameOrPort.trim(), buf)
   }
@@ -1864,14 +1938,23 @@ async function printCupom(data, printerName, cols, opts) {
   const noCut = (opts && opts.noCut === true) || data._receiptOpts?.noCut === true
   console.log('[printer] cut:', noCut ? '(suprimido por cortarPapel=false)' : [...CUT].map((b) => '0x' + b.toString(16).padStart(2, '0')).join(' '))
   const _data = noCut ? { ...data, _receiptOpts: { ...(data._receiptOpts || {}), noCut: true } } : data
-  let buf = buildReceiptBuffer({ ..._data, _logoBuffer }, cols)
+  // Família do alvo: perfil roteado manda; sem ele, só o NOME promove a Daruma.
+  const explicito = !!(opts && opts.profile)
+  // Só no RAW direto (porta COM). Fila do Windows (driver) segue byte-a-byte igual.
+  const familia = isComPort(String(printerName)) ? familiaDe(explicito ? opts.profile : _activeProfile, printerName, { explicito }) : 'generica'
+  if (familia === 'daruma') console.log('[printer] familia: daruma (QR raster, corte GS V 1 + ESC m, sem tamanho duplo)')
+  let buf = buildReceiptBuffer({ ..._data, _logoBuffer }, cols, { familia })
 
   // Bipe ao imprimir (config do tenant). BEL (0x07) é o comando mais seguro/
   // universal; impressoras sem buzzer simplesmente ignoram o byte.
   if (data._receiptOpts?.beep === true) {
     const BEEP = Buffer.from([0x07])
     if (buf && buf.jobs) buf = { ...buf, kitchen: Buffer.concat([BEEP, buf.kitchen]) }
-    else if (Buffer.isBuffer(buf)) buf = Buffer.concat([BEEP, buf])
+    else if (Buffer.isBuffer(buf)) {
+      const qr = buf.qrRaster
+      buf = Buffer.concat([BEEP, buf])
+      if (qr) buf.qrRaster = { ...qr, start: qr.start + 1, end: qr.end + 1 }
+    }
   }
 
   // Delivery (cozinha + cliente): dois cupons no MESMO job atômico da fila.
@@ -1909,6 +1992,7 @@ function printTestCupom(printerName, cols, type, opts) {
   cols = cols || COLS
   type = type || 'balcao'
   setPrintParams(opts) // teste usa o encoding/codepage selecionado pelo usuário
+  if (type === 'pagina-teste') return printPaginaTeste(printerName, cols, opts)
   // Teste rápido de acentos: imprime as palavras-chave para conferir visualmente.
   if (type === 'acentos') {
     const noCut = opts && opts.noCut === true
@@ -1955,6 +2039,47 @@ function printTestCupom(printerName, cols, type, opts) {
   )
 }
 
+// Página de teste do PERFIL: régua de colunas, acentos, tamanho duplo, QR raster
+// e corte — exatamente com os bytes que a família usa nos cupons.
+function buildPaginaTeste(cols, familia, noCut) {
+  const fam = FAMILIAS[familia] || FAMILIAS.generica
+  const dm = familia === 'daruma'
+  const regua = Array.from({ length: cols }, (_, i) => String((i + 1) % 10)).join('')
+  const q = buildQrBands('https://app.pedeplus.com.br/teste-impressora')
+  const seg = [
+    ESC_INIT, charset(),
+    BOLD_ON, ln('PAGINA DE TESTE - ' + fam.nome), ESC_INIT, charset(),
+    ln('Colunas: ' + cols + ' | ' + ENCODING + ' / ESC t ' + CODEPAGE_N),
+    ln('='.repeat(cols)),
+    ln(regua),
+    ln('-'.repeat(cols)),
+    ln('Acentos: Porção Camarão Açaí Pão Café Pêssego'),
+    ln('-'.repeat(cols)),
+    ...(fam.tamanhoDuplo
+      ? [BIG_ON, ln('DUPLO'), ESC_INIT, charset()]
+      : [BOLD_ON, ln('Tamanho duplo desligado neste perfil'), ESC_INIT, charset()]),
+    ln('='.repeat(cols)),
+    q.inline, charset(),
+    ln('QR raster de teste'),
+    ln('='.repeat(cols)),
+  ]
+  if (dm) seg.push(...(noCut ? [Buffer.from('\n'.repeat(4))] : [Buffer.from('\n'.repeat(fam.feedAntesCorte)), Buffer.from(fam.corte)]))
+  else seg.push(FEED_CUT, ...(noCut ? [] : [CUT]))
+  const bufs = seg.filter(Buffer.isBuffer)
+  const out = Buffer.concat(bufs)
+  let off = 0
+  for (const x of bufs) { if (x === q.inline) { out.qrRaster = { start: off, end: off + x.length, bands: q.bands, widthBytes: q.widthBytes }; break } off += x.length }
+  return out
+}
+
+function printPaginaTeste(printerName, cols, opts) {
+  const explicito = !!(opts && opts.profile)
+  if (explicito) setActiveProfile(opts.profile)
+  setPrintParams(opts)
+  const familia = isComPort(String(printerName)) ? familiaDe(explicito ? opts.profile : _activeProfile, printerName, { explicito }) : 'generica'
+  return printRaw(printerName, buildPaginaTeste(cols || COLS, familia, !!(opts && opts.noCut === true)))
+}
+
 async function getPrinters() {
   const printers = nodePrinter().getPrinters()
   console.log('[getPrinters]', printers.map((p) => p.name).filter(Boolean).join(', '))
@@ -1994,4 +2119,4 @@ function getSerialPorts() {
 function getActiveProfile() { return _activeProfile }
 function getActiveColumns() { return COLS }
 
-module.exports = { semAcento, cabecalhoDaVia, limpoTexto, printCupom, printReceipt, printTestCupom, getPrinters, getSerialPorts, setPrintParams, setActiveProfile, getActiveProfile, getActiveColumns, buildReceiptBuffer }
+module.exports = { semAcento, cabecalhoDaVia, limpoTexto, printCupom, printReceipt, printTestCupom, getPrinters, getSerialPorts, setPrintParams, setActiveProfile, getActiveProfile, getActiveColumns, buildReceiptBuffer, buildPaginaTeste }

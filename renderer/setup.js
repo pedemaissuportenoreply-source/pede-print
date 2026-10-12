@@ -17,6 +17,7 @@ let _cfg = {}          // config do electron-store
 let _targets = []      // alvos detectados (get-print-targets)
 let _mapping = {}      // printers-config.printers (deviceKey -> entry)
 let _setores = ['COZINHA', 'CAIXA', 'BAR']
+let _catalog = []      // perfis (get-print-targets) p/ o select "Modelo" do card
 let _active = []       // deviceKeys EM USO (várias ao mesmo tempo), na ordem escolhida
 let _sectorOf = {}     // deviceKey -> setor ('' = todos os pedidos)
 let _otpState = null   // { tempToken, email } enquanto o 2FA está pendente
@@ -321,6 +322,7 @@ async function loadPrinters(autoSelect) {
   }
 
   _setores = (data && data.setores) || _setores
+  _catalog = (data && Array.isArray(data.catalog)) ? data.catalog : []
   _mapping = (data && data.config && data.config.printers) || {}
   const all = (data && data.targets) || []
   _targets = all.filter((t) => !isSystemPort(t))
@@ -463,10 +465,38 @@ document.addEventListener('scroll', (e) => {
 // Select de setor (custom). Mesmos valores do <select> antigo: '' = todos.
 function buildSectorSelect(value, onChange) {
   const opts = [{ v: '', l: 'Todos os pedidos' }].concat(_setores.map((s) => ({ v: s, l: sectorLabel(s) })))
+  return buildXSelect(opts, value, onChange, 'Setor')
+}
+
+// Modelo (perfil) por impressora: '' = Automático (Daruma pelo nome, senão
+// Genérica). Um perfil por fabricante — o mesmo catálogo do agente.
+const MODELOS = [
+  { rotulo: 'Genérica ESC/POS', casa: (p) => p.isGeneric },
+  { rotulo: 'Daruma', casa: (p) => /daruma/i.test(p.brand) && /800/.test(p.name) },
+  { rotulo: 'Elgin', casa: (p) => /elgin/i.test(p.brand) },
+  { rotulo: 'Epson', casa: (p) => /epson/i.test(p.brand) },
+  { rotulo: 'Bematech', casa: (p) => /bematech/i.test(p.brand) },
+]
+function buildModelSelect(value, onChange) {
+  const opts = [{ v: '', l: 'Modelo: automático' }]
+  for (const m of MODELOS) {
+    const p = _catalog.find((x) => x.id != null && m.casa(x))
+    if (p) opts.push({ v: String(p.id), l: 'Modelo: ' + m.rotulo })
+  }
+  // Perfil salvo que não é um dos 5 (ex.: Tanca): continua listado pelo nome.
+  if (value && !opts.some((o) => o.v === value)) {
+    const p = _catalog.find((x) => String(x.id) === value)
+    opts.push({ v: value, l: 'Modelo: ' + (p ? p.name : 'personalizado') })
+  }
+  return buildXSelect(opts, value, onChange, 'Modelo da impressora')
+}
+
+function buildXSelect(opts, value, onChange, aria) {
   const wrap = el('div', 'xsel')
   const btn = document.createElement('button')
   btn.type = 'button'; btn.className = 'xsel-btn'
   btn.setAttribute('aria-haspopup', 'listbox'); btn.setAttribute('aria-expanded', 'false')
+  if (aria) btn.setAttribute('aria-label', aria)
   const lbl = el('span')
   btn.appendChild(lbl)
   btn.insertAdjacentHTML('beforeend', ICON_CHEVRON)
@@ -572,8 +602,15 @@ function buildCard(t) {
     void persistPrinters()
   }))
 
+  // Modelo por impressora (override do automático). Salva junto do setor.
+  const prevMap = _mapping[t.deviceKey] || {}
+  tools.appendChild(buildModelSelect(prevMap.profileId != null ? String(prevMap.profileId) : '', (v) => {
+    _mapping[t.deviceKey] = { ...(_mapping[t.deviceKey] || {}), profileId: v ? Number(v) : null }
+    void persistPrinters()
+  }))
+
   const testBtn = document.createElement('button')
-  testBtn.type = 'button'; testBtn.className = 'btn-ghost btn-sm'; testBtn.textContent = 'Imprimir teste'
+  testBtn.type = 'button'; testBtn.className = 'btn-ghost btn-sm'; testBtn.textContent = 'Imprimir página de teste'
   const fb = el('span', 'pcard-fb')
   testBtn.addEventListener('click', async (e) => {
     e.stopPropagation()
@@ -586,6 +623,7 @@ function buildCard(t) {
         printerName: t.target,
         profileId: prev.profileId ?? t.suggestedProfileId ?? null,
         cortarPapel: prev.cortarPapel !== false,
+        type: 'pagina-teste',
       })
       card.classList.remove('err'); st.textContent = 'Pronta'
       fb.className = 'pcard-fb ok'; fb.innerHTML = ICON_CHECK + '<span>Enviado. Saiu na impressora?</span>'
@@ -594,7 +632,7 @@ function buildCard(t) {
       fb.className = 'pcard-fb err'; fb.textContent = 'Erro: ' + ((err && err.message) || err)
     } finally {
       testBtn.disabled = false
-      testBtn.textContent = 'Imprimir teste'
+      testBtn.textContent = 'Imprimir página de teste'
     }
   })
   tools.appendChild(testBtn)
