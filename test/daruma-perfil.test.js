@@ -1,5 +1,5 @@
 'use strict'
-// Perfil Daruma (DR700/DR800/DR800H): QR em raster, corte GS V 1 + ESC m com
+// Perfil Daruma (DR700/DR800/DR800H): sem QR do motoboy (só o número), corte GS V 1 + ESC m com
 // feed antes, sem tamanho duplo e separadores na largura do perfil. Qualquer
 // outra impressora fica no Genérico — bytes IGUAIS aos de antes (snapshot).
 process.env.TZ = 'America/Fortaleza'
@@ -67,14 +67,34 @@ test('Genérico: bytes IGUAIS aos de hoje (delivery, cozinha, bar, pagamento div
   assert.deepStrictEqual(casos, SNAP)
 })
 
-test('Daruma: QR em raster (GS v 0), sem GS ( k; rótulo e número do pedido embaixo', () => {
+test('Daruma: sem QR do motoboy (nem GS v 0, nem GS ( k, nem rótulo); só a linha do número', () => {
+  for (const cols of [48, 32]) {
+    const { client } = buildReceiptBuffer(F.delivery, cols, DM)
+    assert.ok(!client.includes(Buffer.from([0x1d, 0x76, 0x30])), 'sem raster GS v 0')
+    assert.ok(!client.includes(Buffer.from([0x1d, 0x28, 0x6b])), 'sem QR nativo GS ( k')
+    const linhas = linhasVisiveis(client)
+    const txt = linhas.join('\n')
+    assert.ok(!txt.includes('escaneie'), 'sem rótulo do QR')
+    assert.ok(!txt.includes('/motoboy/q/'), 'sem URL/token no papel')
+    const i = linhas.findIndex((l) => /^Motoboy: digite o n.mero$/.test(l.trim())) // acento na codepage do perfil
+    assert.ok(i > 0, 'linha do motoboy')
+    assert.strictEqual(linhas[i + 1].trim(), 'PEDIDO #D249')
+    assert.ok(linhas[i].length <= cols && linhas[i + 1].length <= cols && linhas[i + 1].startsWith(' '), 'centralizado nas colunas')
+    assert.ok(client.includes(Buffer.concat([Buffer.from([0x1b, 0x45, 0x01]), Buffer.from(linhas[i + 1] + '\n', 'latin1')])), 'número em negrito')
+    assert.ok(!txt.includes('698181'), 'código do cliente fora do papel')
+  }
+})
+
+test('Daruma: rodapé "Emitido por Pede+" antes do feed e do corte', () => {
   const { client } = buildReceiptBuffer(F.delivery, 48, DM)
-  assert.ok(client.includes(Buffer.from([0x1d, 0x76, 0x30])), 'raster GS v 0')
-  assert.ok(!client.includes(Buffer.from([0x1d, 0x28, 0x6b])), 'sem QR nativo GS ( k')
-  assert.ok(client.qrRaster && client.qrRaster.bands.length > 0 && client.qrRaster.end > client.qrRaster.start)
-  const txt = linhasVisiveis(client).join('\n')
-  assert.ok(/Motoboy: escaneie pra iniciar\n\s*PEDIDO #D249/.test(txt))
-  assert.ok(!txt.includes('698181'), 'código do cliente fora do papel')
+  const t = client.toString('latin1')
+  assert.ok(t.lastIndexOf('Emitido por Pede+') < t.lastIndexOf('\n\n\n\n\n\n\x1dV\x01\x1bm'))
+})
+
+test('Genérico: QR do motoboy continua (GS ( k + rótulo)', () => {
+  const { client } = buildReceiptBuffer(F.delivery, 48)
+  assert.ok(client.includes(Buffer.from([0x1d, 0x28, 0x6b])))
+  assert.ok(client.toString('latin1').includes('Motoboy: escaneie pra iniciar'))
 })
 
 test('Daruma: corte GS V 1 + ESC m com 6 linhas de feed antes, nas duas vias', () => {
@@ -151,13 +171,15 @@ test('Auto-detecção por nome: Daruma sim; Epson/Elgin/Bematech não (ficam no 
   assert.match(routing.suggestByName('DR700').name, /DR700/)
 })
 
-test('Página de teste: régua, QR raster e corte do perfil', () => {
+test('Página de teste: régua e corte do perfil; Daruma sem QR', () => {
   const dm = buildPaginaTeste(48, 'daruma', false)
-  assert.ok(dm.qrRaster && dm.includes(Buffer.from([0x1d, 0x76, 0x30])))
+  assert.ok(!dm.includes(Buffer.from([0x1d, 0x76, 0x30])) && !dm.includes(Buffer.from([0x1d, 0x28, 0x6b])), 'Daruma sem QR')
+  assert.ok(texto(dm).includes('QR desligado neste perfil'))
   assert.ok(dm.subarray(dm.length - 5).equals(Buffer.from([0x1d, 0x56, 0x01, 0x1b, 0x6d])))
   assert.ok(texto(dm).includes('123456789012345678901234567890123456789012345678'))
   assert.ok(texto(dm).includes('Tamanho duplo desligado'))
   const gen = buildPaginaTeste(32, 'generica', true)
   assert.ok(texto(gen).includes('DUPLO'))
+  assert.ok(gen.includes(Buffer.from([0x1d, 0x28, 0x6b])), 'Genérico com QR nativo')
   assert.ok(!gen.includes(Buffer.from([0x1d, 0x56])), 'noCut sem corte')
 })

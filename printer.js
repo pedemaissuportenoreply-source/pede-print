@@ -9,7 +9,7 @@ function nodePrinter() {
 }
 const iconv = require('iconv-lite')
 const { isComPort, sendToComPort } = require('./src/serial-print')
-const { buildLogoBands, sendLogoBands, buildQrBands, sendQrBands } = require('./src/logo')
+const { buildLogoBands, sendLogoBands } = require('./src/logo')
 const { FAMILIAS, familiaDe } = require('./printer-familias')
 
 // Logo raster na COM (DR800) sai como lixo — desabilitado por padrão. Só liga
@@ -562,8 +562,6 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
       ? Buffer.concat([iconv.encode('\n' + '- '.repeat(Math.floor(cols / 2)).trimEnd() + '\n', 'ascii'), Buffer.from('\n'.repeat(4), 'ascii')])
       : Buffer.from('\n'.repeat(fam.feedAntesCorte), 'ascii')
   const CUT = dm ? Buffer.from(fam.corte) : _cutAtual()
-  // QR em raster (Daruma): bandas GS v 0; na COM elas vão pelo sender de raster.
-  let qrRaster = null
   // Logo só existe quando habilitado e já convertido (apenas comprovante de pagamento)
   const logoBuf = Buffer.isBuffer(rawData._logoBuffer) ? rawData._logoBuffer : null
   console.log('[printer] build | type:', rawData._printType ?? rawData.type ?? 'payment', '| order:', data.orderCode, '| items:', data.items.length, '| logo:', !!logoBuf, '| enc:', ENCODING, '| codepage(ESC t n):', CODEPAGE_N)
@@ -1135,12 +1133,9 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
     // QR do MOTOBOY (backend >= lote QR): URL com token opaco de uso único da
     // entrega — não é o código do cliente. Sem o campo (payload antigo) → sem QR.
     const qrMoto = qrEntregaDe(rawData)
-    if (qrMoto && dm) {
-      // Daruma: GS ( k não existe — QR em raster (GS v 0), rótulo e número embaixo.
-      const q = buildQrBands(qrMoto.url)
-      qrRaster = { buf: q.inline, bands: q.bands, widthBytes: q.widthBytes }
-      p(q.inline, charset())
-      p(BOLD_ON, ln(ctr(qrMoto.rotulo)), ESC_INIT)
+    if (qrMoto && !fam.qrMotoboy) {
+      // Perfil sem QR (Daruma: nem nativo nem raster saem): o motoboy usa o número.
+      p(ln(ctr('Motoboy: digite o número')))
       p(BOLD_ON, ln(ctr('PEDIDO #' + (data.orderCode || '?'))), ESC_INIT)
       divD()
     } else if (qrMoto) {
@@ -1775,19 +1770,7 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
   const isReceipt =!isDelivery && (rawData._printType === 'receipt' || rawData._via === 'cliente'
     || rawData.type === 'payment')
   // Buffer.concat nunca recebe null/undefined
-  const concat = (segs) => {
-    const bufs = segs.filter(Buffer.isBuffer)
-    const out = Buffer.concat(bufs)
-    // Marca onde está o QR raster: na COM o trecho vai pelo sender de raster.
-    if (qrRaster) {
-      let off = 0
-      for (const x of bufs) {
-        if (x === qrRaster.buf) { out.qrRaster = { start: off, end: off + x.length, bands: qrRaster.bands, widthBytes: qrRaster.widthBytes }; break }
-        off += x.length
-      }
-    }
-    return out
-  }
+  const concat = (segs) => Buffer.concat(segs.filter(Buffer.isBuffer))
   // Relatorio de caixa: tem prioridade e nunca usa o template de pedido/pagamento.
   // Reimpressão manual (ex.: botão "Recibo" do histórico): só a via do cliente,
   // NUNCA a via cozinha. O fluxo de criação do pedido não envia esta flag.
@@ -1864,20 +1847,9 @@ function _enqueue(fn, target) {
 }
 
 // Envio efetivo de UM buffer (sem enfileirar) — usado dentro de _enqueue.
-async function _printViaSerialComQr(comPort, buf) {
-  const { start, end, bands, widthBytes } = buf.qrRaster
-  console.log('[printRaw] COM com QR raster | bandas:', bands.length)
-  await printViaSerial(comPort, buf.subarray(0, start))
-  await _comDelay(200)
-  await sendQrBands(comPort, bands, { widthBytes })
-  await _comDelay(200)
-  await printViaSerial(comPort, buf.subarray(end))
-}
-
 function _sendRawNow(printerNameOrPort, buf) {
   if (!printerNameOrPort) return Promise.reject(new Error('Impressora nao configurada'))
   if (isComPort(String(printerNameOrPort))) {
-    if (buf && buf.qrRaster) return _printViaSerialComQr(printerNameOrPort.trim(), buf)
     console.log('[printRaw] usando serial direto chunked (bypass spooler)')
     return printViaSerial(printerNameOrPort.trim(), buf)
   }
@@ -1950,11 +1922,7 @@ async function printCupom(data, printerName, cols, opts) {
   if (data._receiptOpts?.beep === true) {
     const BEEP = Buffer.from([0x07])
     if (buf && buf.jobs) buf = { ...buf, kitchen: Buffer.concat([BEEP, buf.kitchen]) }
-    else if (Buffer.isBuffer(buf)) {
-      const qr = buf.qrRaster
-      buf = Buffer.concat([BEEP, buf])
-      if (qr) buf.qrRaster = { ...qr, start: qr.start + 1, end: qr.end + 1 }
-    }
+    else if (Buffer.isBuffer(buf)) buf = Buffer.concat([BEEP, buf])
   }
 
   // Delivery (cozinha + cliente): dois cupons no MESMO job atômico da fila.
@@ -2039,13 +2007,12 @@ function printTestCupom(printerName, cols, type, opts) {
   )
 }
 
-// Página de teste do PERFIL: régua de colunas, acentos, tamanho duplo, QR raster
-// e corte — exatamente com os bytes que a família usa nos cupons.
+// Página de teste do PERFIL: régua de colunas, acentos, tamanho duplo, QR (só no
+// perfil com qrMotoboy, no mesmo comando do cupom) e corte.
 function buildPaginaTeste(cols, familia, noCut) {
   const fam = FAMILIAS[familia] || FAMILIAS.generica
   const dm = familia === 'daruma'
   const regua = Array.from({ length: cols }, (_, i) => String((i + 1) % 10)).join('')
-  const q = buildQrBands('https://app.pedeplus.com.br/teste-impressora')
   const seg = [
     ESC_INIT, charset(),
     BOLD_ON, ln('PAGINA DE TESTE - ' + fam.nome), ESC_INIT, charset(),
@@ -2059,18 +2026,16 @@ function buildPaginaTeste(cols, familia, noCut) {
       ? [BIG_ON, ln('DUPLO'), ESC_INIT, charset()]
       : [BOLD_ON, ln('Tamanho duplo desligado neste perfil'), ESC_INIT, charset()]),
     ln('='.repeat(cols)),
-    q.inline, charset(),
-    ln('QR raster de teste'),
+    ...(fam.qrMotoboy
+      ? [qrEscPos('https://app.pedeplus.com.br/teste-impressora', 6), ln(ctr0('QR de teste', cols))]
+      : [ln('QR desligado neste perfil (motoboy usa o numero)')]),
     ln('='.repeat(cols)),
   ]
   if (dm) seg.push(...(noCut ? [Buffer.from('\n'.repeat(4))] : [Buffer.from('\n'.repeat(fam.feedAntesCorte)), Buffer.from(fam.corte)]))
   else seg.push(FEED_CUT, ...(noCut ? [] : [CUT]))
-  const bufs = seg.filter(Buffer.isBuffer)
-  const out = Buffer.concat(bufs)
-  let off = 0
-  for (const x of bufs) { if (x === q.inline) { out.qrRaster = { start: off, end: off + x.length, bands: q.bands, widthBytes: q.widthBytes }; break } off += x.length }
-  return out
+  return Buffer.concat(seg.filter(Buffer.isBuffer))
 }
+const ctr0 = (s, cols) => ' '.repeat(Math.max(0, Math.floor((cols - s.length) / 2))) + s
 
 function printPaginaTeste(printerName, cols, opts) {
   const explicito = !!(opts && opts.profile)

@@ -8,7 +8,8 @@
 // de sempre (byte-a-byte igual) — a tabela documenta o que cada uma suporta.
 //
 // Daruma (DR700/DR800/DR800H) no modo padrão dela:
-//   • QR nativo GS ( k não existe → sai em branco. QR vai em RASTER (GS v 0).
+//   • QR do motoboy não sai (nem GS ( k nem raster GS v 0): qrMotoboy=false,
+//     o cupom traz "Motoboy: digite o número" + número do pedido.
 //   • Corte GS V m n (função B, m=65/66 — o que o catálogo manda) é ignorado.
 //     Aceita GS V 1 (função A, parcial, sem avanço) e ESC m (corte nativo
 //     Daruma); como a função A não avança, vai FEED de 6 linhas antes.
@@ -18,27 +19,27 @@
 //     (destaque por negrito) e com toda linha dentro das colunas do perfil.
 const FAMILIAS = {
   generica: {
-    nome: 'Genérica ESC/POS', qr: 'nativo', tamanhoDuplo: true, reverso: true,
+    nome: 'Genérica ESC/POS', qr: 'nativo', qrMotoboy: true, tamanhoDuplo: true, reverso: true,
     corte: null /* do perfil */, feedAntesCorte: 4,
     colunas: { 80: { A: 48, B: 64 }, 58: { A: 32, B: 42 } },
   },
   epson: {
-    nome: 'Epson', qr: 'nativo', tamanhoDuplo: true, reverso: true,
+    nome: 'Epson', qr: 'nativo', qrMotoboy: true, tamanhoDuplo: true, reverso: true,
     corte: null, feedAntesCorte: 4,
     colunas: { 80: { A: 48, B: 64 }, 58: { A: 32, B: 42 } },
   },
   elgin: {
-    nome: 'Elgin', qr: 'nativo', tamanhoDuplo: true, reverso: true,
+    nome: 'Elgin', qr: 'nativo', qrMotoboy: true, tamanhoDuplo: true, reverso: true,
     corte: null, feedAntesCorte: 4,
     colunas: { 80: { A: 48, B: 64 }, 58: { A: 32, B: 42 } },
   },
   bematech: {
-    nome: 'Bematech', qr: 'nativo', tamanhoDuplo: true, reverso: true,
+    nome: 'Bematech', qr: 'nativo', qrMotoboy: true, tamanhoDuplo: true, reverso: true,
     corte: null, feedAntesCorte: 4,
     colunas: { 80: { A: 48, B: 64 }, 58: { A: 32, B: 42 } },
   },
   daruma: {
-    nome: 'Daruma', qr: 'raster', tamanhoDuplo: false, reverso: false,
+    nome: 'Daruma', qr: 'nenhum', qrMotoboy: false, tamanhoDuplo: false, reverso: false,
     corte: [0x1d, 0x56, 0x01, 0x1b, 0x6d], // GS V 1 + ESC m — sem byte nulo
     feedAntesCorte: 6,
     colunas: { 80: { A: 48 }, 58: { A: 32 } },
