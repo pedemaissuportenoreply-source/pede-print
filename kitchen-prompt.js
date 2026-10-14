@@ -20,7 +20,12 @@ function showKitchenPrompt({ token, code, info }) {
     center: true,
     skipTaskbar: false,
     backgroundColor: '#FAFAF9', // tema claro é o padrão (evita flash escuro)
-    webPreferences: { nodeIntegration: true, contextIsolation: false },
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
   })
   win.setMenu(null)
   win.setAlwaysOnTop(true, 'screen-saver')

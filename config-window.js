@@ -25,8 +25,10 @@ function openConfigWindow() {
     minimizable: true,
     maximizable: true,
     webPreferences: {
-      nodeIntegration:  true,
-      contextIsolation: false,
+      nodeIntegration:  false,
+      contextIsolation: true,
+      sandbox:          true,
+      preload:          path.join(__dirname, 'preload.js'),
     },
   })
 

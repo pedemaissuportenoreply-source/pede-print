@@ -9,7 +9,7 @@
 // e a impressora vem da detecção que já existia (deviceKey/printers-config.json) —
 // aqui só apresentamos nome legível, setor e teste.
 
-const { ipcRenderer } = require('electron')
+const ipcRenderer = window.api // bridge do preload (contextIsolation)
 
 // ─── Estado ───────────────────────────────────────────────────────────────────
 

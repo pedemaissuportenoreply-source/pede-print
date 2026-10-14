@@ -93,7 +93,7 @@
     </div>
   </div>
 <script>
-  const { ipcRenderer } = require('electron')
+  const ipcRenderer = window.api // bridge do preload (contextIsolation)
   const params = new URLSearchParams(location.search)
   const token = params.get('token')
   const code = params.get('code') || '?'
