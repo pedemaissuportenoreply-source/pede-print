@@ -1670,6 +1670,20 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
       if (omitidos > 0) p(ln(`... e mais ${omitidos} pedidos`))
     }
 
+    // Cancelamentos e estornos do período — informativo. Some quando não houver.
+    const canc = rawData.cancelamentos
+    if (canc && typeof canc === 'object' && (Number(canc.qtd) || 0) + (Number(canc.estornosQtd) || 0) > 0) {
+      p(ln('-'.repeat(cols)))
+      p(BOLD_ON, ln('CANCELAMENTOS E ESTORNOS'), ESC_INIT)
+      if (Number(canc.qtd) > 0) p(ln(row(`Cancelados (${Number(canc.qtd) || 0}):`, fmtBRL(canc.valor ?? 0))))
+      if (Number(canc.estornosQtd) > 0) p(ln(row(`Estornos (${Number(canc.estornosQtd) || 0}):`, fmtBRL(canc.estornosValor ?? 0))))
+      const itensCanc = Array.isArray(canc.itens) ? canc.itens : []
+      for (const i of itensCanc.slice(0, MAX_DESCONTOS_IMPRESSOS)) {
+        p(ln(row(`  #${L(i?.numero, 12)}${i?.estorno ? ' (estorno)' : ''}`, fmtBRL(i?.valor ?? 0))))
+      }
+      if (itensCanc.length > MAX_DESCONTOS_IMPRESSOS) p(ln(`... e mais ${itensCanc.length - MAX_DESCONTOS_IMPRESSOS}`))
+    }
+
     // Saldo
     p(eq())
     p(BOLD_ON, ln(row('SALDO ESPERADO:', fmtBRL(rawData.saldoEsperado ?? 0))), ESC_INIT)
