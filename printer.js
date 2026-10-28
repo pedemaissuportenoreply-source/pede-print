@@ -169,6 +169,15 @@ function limpoTexto(v, max = 40) {
 
 // Fechamento de caixa: mesmo teto do backend (MAX_PEDIDOS_IMPRESSOS).
 const MAX_DESCONTOS_IMPRESSOS = 30
+
+// Cashback do cupom (servidor >= cashback): usado = desconto; ganho = informativo.
+function cashbackDoPayload(rawData, data) {
+  const usado = Math.round(Number(rawData?.cashbackUsado ?? data?.cashbackUsado ?? 0) * 100) / 100
+  const ganho = Math.round(Number(rawData?.cashbackGanho ?? data?.cashbackGanho ?? 0) * 100) / 100
+  const validadeRaw = rawData?.cashbackValidade ?? data?.cashbackValidade
+  const validade = validadeRaw ? String(validadeRaw).replace(/[^0-9/]/g, '').slice(0, 5) : ''
+  return { usado: usado > 0 ? usado : 0, ganho: ganho > 0 ? ganho : 0, validade }
+}
 const TIPO_ATENDIMENTO = {
   MESA: 'Mesa', BALCAO: 'Balcao', DELIVERY: 'Delivery', RETIRADA: 'Retirada',
   QR: 'QR Code', WAITER: 'Garcom', COUNTER: 'Balcao',
@@ -407,6 +416,10 @@ function normalizePayload(data) {
     cupomCodigo:   data.cupomCodigo   ?? null,
     descontoCupom: data.descontoCupom ?? null,
     freteGratis:   data.freteGratis   ?? false,
+    // Cashback (valores do servidor): usado é desconto; ganho é informativo.
+    cashbackUsado:    data.cashbackUsado    ?? null,
+    cashbackGanho:    data.cashbackGanho    ?? null,
+    cashbackValidade: data.cashbackValidade ?? null,
     // Fechamento no Caixa (valores do servidor): desconto manual + couvert.
     desconto:      data.desconto      ?? null,
     couvert:       data.couvert       ?? null,
@@ -1022,10 +1035,12 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
     const dlvDescSub = dlvFreteGratis ? 0 : dlvDescTotal
     const dlvCupomTag = dlvCupomCod ? ` (${dlvCupomCod})` : ''
     // itemsTotal é o subtotal CHEIO; o desconto incide sobre ele (antes do frete).
-    const dlvTotalLiquido = displayedTotal - dlvDescSub
+    const dlvCb = cashbackDoPayload(rawData, data)
+    const dlvTotalLiquido = Math.round((displayedTotal - dlvDescSub - dlvCb.usado) * 100) / 100
     console.log('[delivery total] items:', itemsTotal, '| fee:', fee, '| payloadTotal:', payloadTotal, '| desconto:', dlvDescTotal, '| displayed:', dlvTotalLiquido)
     p(ln(row('Subtotal:', fmtBRL(itemsTotal))))
     if (dlvDescSub > 0) p(ln(row('Desconto' + dlvCupomTag + ':', '-' + fmtBRL(dlvDescSub))))
+    if (dlvCb.usado > 0) p(ln(row('Cashback utilizado:', '-' + fmtBRL(dlvCb.usado))))
     if (dlvFreteGratis && dlvDescTotal > 0) p(ln(row('Taxa entrega:', 'GRATIS' + dlvCupomTag)))
     else if (fee) p(ln(row('Taxa entrega:', fmtBRL(fee))))
     const dlvServ = rawData.taxaServico ?? data.taxaServico
@@ -1037,6 +1052,7 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
     }
     if (dlvHasServ) framedRowTB('TOTAL C/ SERVICO:', fmtBRL(dlvTotalLiquido + Number(dlvServ)))
     else framedRowTB('TOTAL:', fmtBRL(dlvTotalLiquido))
+    if (dlvCb.ganho > 0) p(ln(ctr('Cashback ganho ' + fmtBRL(dlvCb.ganho) + (dlvCb.validade ? ' (valido ate ' + dlvCb.validade + ')' : ''))))
     if (alt) {
       if (alt.totalAnterior != null) p(ln(row('Total anterior:', fmtBRL(alt.totalAnterior))))
       // Com `pagamentoPendente` a cobrança sai no bloco de pagamento (sem duplicar).
@@ -1352,10 +1368,12 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
     const descManual = Number(rawData.desconto ?? data.desconto ?? 0)
     const couvert = Number(rawData.couvert ?? data.couvert ?? 0)
     const nrPessoas = rawData.nrPessoas ?? data.nrPessoas ?? null
-    if (taxa != null || hasServ || descTotal > 0 || descManual > 0 || couvert > 0) {
+    const cb = cashbackDoPayload(rawData, data)
+    if (taxa != null || hasServ || descTotal > 0 || descManual > 0 || couvert > 0 || cb.usado > 0) {
       if (data.subtotal != null) p(ln(row('Subtotal:', fmtBRL(Number(data.subtotal) + descSub))))
       if (descSub > 0) p(ln(row('Desconto' + cupomTag + ':', '-' + fmtBRL(descSub))))
       if (descManual > 0) p(ln(row('Desconto:', '-' + fmtBRL(descManual))))
+      if (cb.usado > 0) p(ln(row('Cashback utilizado:', '-' + fmtBRL(cb.usado))))
       if (freteGratis && descTotal > 0) p(ln(row('Taxa entrega:', 'GRATIS' + cupomTag)))
       else if (taxa != null) p(ln(row('Taxa entrega:', fmtBRL(taxa))))
       if (hasServ) {
@@ -1377,6 +1395,7 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
       p(BOLD_ON, TALL_ON, ln(row('TOTAL:', fmtBRL(total))), ESC_INIT)
     }
     if (descTotal > 0) p(ln(ctr('Voce economizou ' + fmtBRL(descTotal) + cupomTag)))
+    if (cb.ganho > 0) p(ln(ctr('Cashback ganho ' + fmtBRL(cb.ganho) + (cb.validade ? ' (valido ate ' + cb.validade + ')' : ''))))
     blank() // separa TOTAL do grupo Pagamento/Valor Recebido/Troco
     // Pré-conta NÃO mostra forma de pagamento, troco nem "PAGO".
     const pg = preconta ? null : (rawData.formaPagamento ?? data.paymentMethod)
@@ -1650,6 +1669,7 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
           p(ln(row(`  ${L(c?.codigo, 24)} x${Number(c?.usos) || 0}`, '-' + fmtBRL(c?.total ?? 0))))
         }
       }
+      if (Number(desc.cashback?.total) > 0) p(ln(row(`Cashback (${Number(desc.cashback.pedidos) || 0} ped):`, '-' + fmtBRL(desc.cashback.total))))
       p(BOLD_ON, ln(row('TOTAL DESCONTOS:', '-' + fmtBRL(desc.total))), ESC_INIT)
       const cf = desc.conferencia
       if (cf && typeof cf === 'object') {
