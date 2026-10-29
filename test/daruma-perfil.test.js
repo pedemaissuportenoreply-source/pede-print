@@ -78,11 +78,11 @@ test('Daruma: sem QR do motoboy (nem GS v 0, nem GS ( k, nem rótulo); só a lin
     const txt = linhas.join('\n')
     assert.ok(!txt.includes('escaneie'), 'sem rótulo do QR')
     assert.ok(!txt.includes('/motoboy/q/'), 'sem URL/token no papel')
-    const i = linhas.findIndex((l) => /^Motoboy: digite o n.mero$/.test(l.trim())) // acento na codepage do perfil
+    const i = linhas.findIndex((l) => l.trim() === 'MOTOBOY: informe o PEDIDO')
     assert.ok(i > 0, 'linha do motoboy')
-    assert.strictEqual(linhas[i + 1].trim(), 'PEDIDO #D249')
+    assert.strictEqual(linhas[i + 1].trim(), '#D249')
     assert.ok(linhas[i].length <= cols && linhas[i + 1].length <= cols && linhas[i + 1].startsWith(' '), 'centralizado nas colunas')
-    assert.ok(client.includes(Buffer.concat([Buffer.from([0x1b, 0x45, 0x01]), Buffer.from(linhas[i + 1] + '\n', 'latin1')])), 'número em negrito')
+    assert.ok(client.includes(Buffer.concat([Buffer.from([0x1b, 0x45, 0x01, 0x1b, 0x21, 0x30]), Buffer.from(linhas[i + 1] + '\n', 'latin1')])), 'número em negrito + duplo')
     assert.ok(!txt.includes('698181'), 'código do cliente fora do papel')
   }
 })

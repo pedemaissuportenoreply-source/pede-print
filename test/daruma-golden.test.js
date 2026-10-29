@@ -54,7 +54,7 @@ test('Daruma: cabeçalho do tenant em todos os documentos com cabeçalho', () =>
 test('Daruma: sem QR do motoboy; tamanho duplo desligado com ESC ! 0 (sem reset)', () => {
   const cli = DOCS['delivery:cliente']
   assert.ok(!cli.includes(Buffer.from([0x1d, 0x28, 0x6b])) && !cli.includes(Buffer.from([0x1d, 0x76, 0x30])))
-  assert.ok(/Motoboy: digite o n.mero/.test(cli.toString('latin1')))
+  assert.ok(cli.toString('latin1').includes('MOTOBOY: informe o PEDIDO'))
   for (const [k, b] of Object.entries(DOCS)) {
     if (b.includes(Buffer.from([0x1b, 0x21, 0x30])) || b.includes(Buffer.from([0x1b, 0x21, 0x10]))) {
       assert.ok(b.includes(Buffer.from([0x1b, 0x21, 0x00])), `${k}: ESC ! 0 depois do tamanho duplo`)

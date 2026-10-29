@@ -570,8 +570,9 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
       ? Buffer.concat([iconv.encode('\n' + '- '.repeat(Math.floor(cols / 2)).trimEnd() + '\n', 'ascii'), Buffer.from('\n'.repeat(4), 'ascii')])
       : Buffer.from('\n'.repeat(fam.feedAntesCorte), 'ascii')
   const CUT = dm ? Buffer.from(fam.corte) : _cutAtual()
-  // Logo só existe quando habilitado e já convertido (apenas comprovante de pagamento)
-  const logoBuf = Buffer.isBuffer(rawData._logoBuffer) ? rawData._logoBuffer : null
+  // Logo só existe quando habilitado e já convertido (apenas comprovante de pagamento).
+  // Daruma: o raster GS v 0 não sai e engolia o cabeçalho — sem logo, só texto.
+  const logoBuf = !dm && Buffer.isBuffer(rawData._logoBuffer) ? rawData._logoBuffer : null
   console.log('[printer] build | type:', rawData._printType ?? rawData.type ?? 'payment', '| order:', data.orderCode, '| items:', data.items.length, '| logo:', !!logoBuf, '| enc:', ENCODING, '| codepage(ESC t n):', CODEPAGE_N)
 
   // Helpers — sem bytes nulos
@@ -1145,9 +1146,10 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
     // entrega — não é o código do cliente. Sem o campo (payload antigo) → sem QR.
     const qrMoto = qrEntregaDe(rawData)
     if (qrMoto && !fam.qrMotoboy) {
-      // Perfil sem QR (Daruma: nem nativo nem raster saem): o motoboy usa o número.
-      p(ln(ctr('Motoboy: digite o número')))
-      p(BOLD_ON, ln(ctr('PEDIDO #' + (data.orderCode || '?'))), ESC_INIT)
+      // Perfil sem QR (Daruma: nem nativo nem raster saem): o motoboy informa o
+      // número do pedido. Nunca o código de entrega DLV — esse é só do cliente.
+      p(BOLD_ON, ln(ctr('MOTOBOY: informe o PEDIDO')), ESC_INIT)
+      p(BOLD_ON, ...ctrBig('#' + (data.orderCode || '?')))
       divD()
     } else if (qrMoto) {
       p(BOLD_ON, ln(ctr(qrMoto.rotulo)), ESC_INIT)
@@ -1159,6 +1161,8 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
     // A URL pública de acompanhamento (reviewUrl) segue no payload p/ outros
     // canais (ex.: WhatsApp), mas não é impressa.
     const footerMsgC = rawData.footerMessage ?? data.footerMessage
+    // Daruma: rodapé fixo, todo ANTES do feed + corte (nada sai depois do GS V 1).
+    if (dm) { divS(); p(ln(ctr('NAO E DOCUMENTO FISCAL'))) }
     if (footerMsgC) for (const fl of wrap(String(footerMsgC), cols)) p(ln(ctr(fl)))
     p(ln(ctr('Obrigado pela preferencia!')))
     const impressoEm = fmtDate(data.printedAt ?? new Date().toISOString())
@@ -1784,7 +1788,11 @@ function buildReceiptBuffer(rawData, cols, perfil = {}) {
     const emitida = fmtDateParts(n.emitidaEm)
     p(ln(ctr(`NFC-e n ${n.numero ?? '-'} Serie ${n.serie ?? '-'} ${emitida.date} ${emitida.time}`)))
     if (n.protocolo) p(ln(ctr('Protocolo de autorizacao: ' + L(n.protocolo, 20))))
-    if (n.qrcode) {
+    if (n.qrcode && dm) {
+      // Daruma não imprime GS ( k (e ele engolia o resto): consulta em texto.
+      p(ln(''), ln(ctr('Consulte pela chave de acesso em:')))
+      for (const l of wrap(String(n.qrcode), cols)) p(ln(l))
+    } else if (n.qrcode) {
       p(ln(''))
       p(qrEscPos(String(n.qrcode)))
     }
@@ -1892,6 +1900,15 @@ function printRaw(printerNameOrPort, bufOrText) {
   return _enqueue(() => _sendRawNow(printerNameOrPort, buf), printerNameOrPort)
 }
 
+// Família do alvo: perfil roteado manda; sem ele, só o NOME promove a Daruma.
+// Vale na COM e na fila do Windows (RAW): a Daruma na fila recebia os bytes da
+// Genérica (QR GS ( k + corte GS V B) e engolia o fim de uma via e o cabeçalho
+// da seguinte. Fora da Daruma toda família gera os bytes de sempre.
+function familiaDoAlvo(printerName, opts) {
+  const explicito = !!(opts && opts.profile)
+  return familiaDe(explicito ? opts.profile : _activeProfile, printerName, { explicito })
+}
+
 async function printCupom(data, printerName, cols, opts) {
   cols = cols || COLS
   setPrintParams(opts) // encoding/codepage do tenant (default perfil Epson cp1252/ESC t 16)
@@ -1939,10 +1956,7 @@ async function printCupom(data, printerName, cols, opts) {
   const noCut = (opts && opts.noCut === true) || data._receiptOpts?.noCut === true
   console.log('[printer] cut:', noCut ? '(suprimido por cortarPapel=false)' : [...CUT].map((b) => '0x' + b.toString(16).padStart(2, '0')).join(' '))
   const _data = noCut ? { ...data, _receiptOpts: { ...(data._receiptOpts || {}), noCut: true } } : data
-  // Família do alvo: perfil roteado manda; sem ele, só o NOME promove a Daruma.
-  const explicito = !!(opts && opts.profile)
-  // Só no RAW direto (porta COM). Fila do Windows (driver) segue byte-a-byte igual.
-  const familia = isComPort(String(printerName)) ? familiaDe(explicito ? opts.profile : _activeProfile, printerName, { explicito }) : 'generica'
+  const familia = familiaDoAlvo(printerName, opts)
   if (familia === 'daruma') console.log('[printer] familia: daruma (QR raster, corte GS V 1 + ESC m, sem tamanho duplo)')
   let buf = buildReceiptBuffer({ ..._data, _logoBuffer }, cols, { familia })
 
@@ -2069,10 +2083,9 @@ function buildPaginaTeste(cols, familia, noCut) {
 const ctr0 = (s, cols) => ' '.repeat(Math.max(0, Math.floor((cols - s.length) / 2))) + s
 
 function printPaginaTeste(printerName, cols, opts) {
-  const explicito = !!(opts && opts.profile)
-  if (explicito) setActiveProfile(opts.profile)
+  if (opts && opts.profile) setActiveProfile(opts.profile)
   setPrintParams(opts)
-  const familia = isComPort(String(printerName)) ? familiaDe(explicito ? opts.profile : _activeProfile, printerName, { explicito }) : 'generica'
+  const familia = familiaDoAlvo(printerName, opts)
   return printRaw(printerName, buildPaginaTeste(cols || COLS, familia, !!(opts && opts.noCut === true)))
 }
 
@@ -2115,4 +2128,4 @@ function getSerialPorts() {
 function getActiveProfile() { return _activeProfile }
 function getActiveColumns() { return COLS }
 
-module.exports = { semAcento, cabecalhoDaVia, limpoTexto, printCupom, printReceipt, printTestCupom, getPrinters, getSerialPorts, setPrintParams, setActiveProfile, getActiveProfile, getActiveColumns, buildReceiptBuffer, buildPaginaTeste }
+module.exports = { semAcento, cabecalhoDaVia, limpoTexto, printCupom, printReceipt, printTestCupom, getPrinters, getSerialPorts, setPrintParams, setActiveProfile, getActiveProfile, getActiveColumns, buildReceiptBuffer, buildPaginaTeste, familiaDoAlvo }

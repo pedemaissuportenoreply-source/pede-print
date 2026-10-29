@@ -213,8 +213,9 @@ function _profileForEntry(entry, target) {
     .filter(Boolean).join(' ')
   const base = profileById(entry && entry.profileId)
     || (target && pp.matchProfile(target.vendorId, target.productId))
-    // Fila do Windows (driver) fica como sempre: sem promoção por nome aqui.
-    || (((entry && entry.kind) || (target && target.kind)) === 'windows' ? null : suggestByName(nome))
+    // Fila do Windows: só "DARUMA" no nome promove (sem modelo escolhido no card);
+    // qualquer outra fila segue no Genérico, como sempre.
+    || suggestByName(nome, { soMarca: ((entry && entry.kind) || (target && target.kind)) === 'windows' })
     || pp.genericProfile()
   return _applyOverride(base, entry && entry.override)
 }
