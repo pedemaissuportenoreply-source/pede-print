@@ -100,6 +100,48 @@ test('Daruma: logo raster nunca sai (nem derruba o cabeçalho)', () => {
   assert.ok(build(pagamento, 'generica', EPSON).includes(LOGO_FAKE))
 })
 
+test('Daruma: cabeçalho (nome, PEDIDO #, tipo) antes da data, com logo ligado ou não', () => {
+  for (const logo of [true, false]) {
+    const d = { ...F.delivery, _logoEnabled: logo, _logoBuffer: logo ? LOGO_FAKE : undefined }
+    const b = build(d, 'daruma', DARUMA).client
+    assert.ok(!b.includes(GS_V0) && !b.includes(GS_QR), `logo ${logo}: sem GS v 0 / GS ( k`)
+    const t = b.toString('latin1')
+    const iData = t.indexOf('/2026 - ')
+    for (const s of ['Pede Restaurante', 'PEDIDO #D249', 'DELIVERY']) {
+      assert.ok(t.indexOf(s) > -1 && t.indexOf(s) < iData, `logo ${logo}: ${s} antes da data`)
+    }
+  }
+})
+
+test('Daruma: bytes do cabeçalho = Genérico, só o ESC @ do meio vira ESC ! 0 / ESC E 0 / ESC - 0', () => {
+  const ate = (b) => b.subarray(0, b.indexOf('\n', b.indexOf(Buffer.from('/2026'))) + 1)
+  const g = ate(build(F.delivery, 'generica', DARUMA).client)
+  const d = ate(build(F.delivery, 'daruma', DARUMA).client)
+  const meio = Buffer.from([0x1b, 0x40])
+  const trocado = Buffer.concat([g.subarray(0, 2), Buffer.from(g.subarray(2).toString('latin1').split(meio.toString('latin1')).join('\x1b!\x00\x1bE\x00\x1b-\x00'), 'latin1')])
+  assert.strictEqual(d.toString('hex'), trocado.toString('hex'))
+})
+
+test('Daruma na fila: via cliente só depois da pausa do corte; Genérico mantém 500 ms', async () => {
+  const mod = require.resolve('@thiagoelg/node-printer')
+  const antes = require.cache[mod]
+  const envios = []
+  require.cache[mod] = { id: mod, filename: mod, loaded: true, exports: { printDirect: (o) => { envios.push(Date.now()); o.success(envios.length) } } }
+  try {
+    const intervalo = async (profile) => {
+      envios.length = 0
+      await printer.printCupom(F.delivery, 'Fila Teste ' + profile.name, 48, { profile, encoding: profile.encoding, codepage: profile.codepageEscT })
+      return envios[1] - envios[0]
+    }
+    assert.ok(printer.PAUSA_VIAS_DARUMA_MS >= 3000)
+    assert.ok(await intervalo(DARUMA) >= printer.PAUSA_VIAS_DARUMA_MS - 20)
+    const g = await intervalo(GENERICO)
+    assert.ok(g >= 480 && g < 1500)
+  } finally {
+    if (antes) require.cache[mod] = antes; else delete require.cache[mod]
+  }
+})
+
 test('Daruma: NFC-e sem GS ( k (consulta em texto)', () => {
   const nfce = { type: 'nfce', nfce: { numero: 1, serie: 1, emitidaEm: F.delivery.createdAt, qrcode: 'https://sefaz.exemplo/qr?p=123', emitente: {}, itens: [] } }
   const b = build(nfce, 'daruma', DARUMA)

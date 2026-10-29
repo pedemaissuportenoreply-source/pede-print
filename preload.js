@@ -7,7 +7,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 const INVOKE = new Set([
   'get-config', 'get-status', 'get-app-info', 'get-print-targets',
   'get-autostart', 'set-autostart', 'hide-to-tray', 'preview-server-url',
-  'save-advanced', 'save-printer-mapping', 'test-print',
+  'save-advanced', 'save-printer-mapping', 'test-print', 'diagnostico-daruma',
   'agent-pair', 'agent-login', 'agent-verify-otp', 'agent-resend-otp', 'agent-logout',
 ])
 // Eventos push (main → renderer) que o renderer pode assinar.

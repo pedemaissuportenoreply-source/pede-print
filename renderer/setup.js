@@ -636,6 +636,38 @@ function buildCard(t) {
     }
   })
   tools.appendChild(testBtn)
+
+  // Diagnóstico do cabeçalho na Daruma (perfil escolhido Daruma ou nome Daruma/DR800).
+  const perfilDoCard = () => {
+    const id = (_mapping[t.deviceKey] || {}).profileId ?? t.suggestedProfileId ?? null
+    return _catalog.find((x) => x.id != null && String(x.id) === String(id)) || null
+  }
+  const ehDaruma = () => {
+    const p = perfilDoCard()
+    return p ? /daruma/i.test(p.brand || p.name || '') : /daruma|\bdr[\s-]?(700|800)/i.test(t.target || '')
+  }
+  if (ehDaruma()) {
+    const diagBtn = document.createElement('button')
+    diagBtn.type = 'button'; diagBtn.className = 'btn-ghost btn-sm'; diagBtn.textContent = 'Imprimir teste Daruma'
+    diagBtn.title = 'Cabeçalho com os dados da loja + um pedido de delivery completo, pelo caminho real do app'
+    diagBtn.addEventListener('click', async (e) => {
+      e.stopPropagation()
+      diagBtn.disabled = true
+      diagBtn.innerHTML = '<span class="spin"></span>Enviando…'
+      fb.className = 'pcard-fb'; fb.textContent = ''
+      try {
+        const p = perfilDoCard()
+        await ipcRenderer.invoke('diagnostico-daruma', { printerName: t.target, profileId: p ? p.id : null })
+        fb.className = 'pcard-fb ok'; fb.innerHTML = ICON_CHECK + '<span>Enviado: TESTE E + pedido D999.</span>'
+      } catch (err) {
+        fb.className = 'pcard-fb err'; fb.textContent = 'Erro: ' + ((err && err.message) || err)
+      } finally {
+        diagBtn.disabled = false
+        diagBtn.textContent = 'Imprimir teste Daruma'
+      }
+    })
+    tools.appendChild(diagBtn)
+  }
   tools.appendChild(fb)
   card.appendChild(tools)
 

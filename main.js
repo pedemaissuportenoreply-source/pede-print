@@ -728,8 +728,15 @@ function _tenantEnrich(data, config) {
 
 // Rotina ÚNICA de impressão da comanda da cozinha (silenciosa, serial/spooler).
 // Usada tanto pelo auto-print quanto pelo botão "Imprimir" do popup próprio.
+// Endereço do tenant do último pedido (vem do backend; a config local não tem) —
+// só p/ o diagnóstico Daruma reproduzir o cabeçalho real.
+let _ultimoTenantExtra = {}
 function runKitchenPrint(data, config) {
   const printType = 'kitchen'
+  _ultimoTenantExtra = {
+    tenantNumber: data.tenantNumber ?? null, tenantNeighborhood: data.tenantNeighborhood ?? null,
+    tenantCity: data.tenantCity ?? null, tenantState: data.tenantState ?? null,
+  }
   // Largura: tenant > config local > perfil aplicado > default.
   const cols = _cols(data, config)
   const code = data.orderCode || data.code || data.numeroPedido || '?'
@@ -1223,6 +1230,29 @@ ipcMain.handle('test-print', async (_, { printerName, cols, type, codepage, enco
       noCut: cortarPapel === false, // honra o toggle do card também no teste
     },
   )
+})
+
+// Diagnóstico do cabeçalho Daruma pelo caminho REAL do app (node-printer RAW):
+// 1) cabeçalho com o tenant real (teste E) via printRaw; 2) após 4 s, pedido de
+// delivery completo (cozinha + cliente) via printCupom, como no order:new.
+ipcMain.handle('diagnostico-daruma', async (_, { printerName, profileId }) => {
+  const printer = require('./printer')
+  const diag = require('./src/diagnostico-daruma')
+  const routingMod = require('./printer-routing')
+  const config = effectiveConfig()
+  const target = printerName || _printerTarget(config)
+  const profile = (profileId != null ? routingMod.profileById(Number(profileId)) : null)
+    || routingMod.suggestByName(target)
+  if (!profile) throw new Error('Perfil Daruma não encontrado para esta impressora.')
+  const opts = { encoding: profile.encoding, codepage: profile.codepageEscT, profile }
+  const tenant = diag.tenantDaConfig(config, _ultimoTenantExtra)
+  printer.setActiveProfile(profile)
+  printer.setPrintParams(opts)
+  const { E } = diag.montarTestes(printer, tenant)
+  await printer.printRaw(target, E)
+  await new Promise((r) => setTimeout(r, 4000))
+  await printer.printCupom(diag.pedidoDelivery(tenant, 'D999'), target, profile.columns || DEFAULT_COLS, opts)
+  return true
 })
 
 ipcMain.handle('get-status', () => currentStatus)

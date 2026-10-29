@@ -1870,6 +1870,11 @@ function printViaSpooler(printerName, buf) {
 }
 
 const _comDelay = (ms) => new Promise((r) => setTimeout(r, ms))
+// Pausa entre a via cozinha e a via cliente na Daruma (impressão + corte da 1ª).
+const PAUSA_VIAS_DARUMA_MS = (() => {
+  const n = parseInt(process.env.PEDE_DARUMA_PAUSA_VIAS_MS, 10)
+  return Number.isInteger(n) && n >= 0 ? n : 3000
+})()
 
 // Fila POR ALVO: garante que logo (raster contíguo) e texto (chunked) NUNCA se
 // sobreponham NA MESMA impressora, mas mantém impressoras distintas isoladas —
@@ -1971,10 +1976,14 @@ async function printCupom(data, printerName, cols, opts) {
   // Delivery (cozinha + cliente): dois cupons no MESMO job atômico da fila.
   // Pausa entre as vias: garante que o corte da via cozinha conclua antes das
   // primeiras linhas da via cliente alcançarem a guilhotina.
+  // Daruma: descarta o que chega enquanto a guilhotina (GS V 1 + ESC m) atua — com
+  // 500 ms o cabeçalho inteiro da via cliente sumia (saía a partir da data). Os
+  // bytes do cabeçalho são os do Genérico (só ESC ! 0 no lugar do ESC @ do meio).
+  const pausaVias = familia === 'daruma' && !noCut ? PAUSA_VIAS_DARUMA_MS : 500
   if (buf && buf.jobs) {
     return _enqueue(async () => {
       await _sendRawNow(printerName, buf.kitchen)
-      await _comDelay(500) // guilhotina atua (corte mecânico) antes da via cliente
+      await _comDelay(pausaVias) // guilhotina atua (corte mecânico) antes da via cliente
       await _sendRawNow(printerName, buf.client)
     }, printerName)
   }
@@ -2128,4 +2137,4 @@ function getSerialPorts() {
 function getActiveProfile() { return _activeProfile }
 function getActiveColumns() { return COLS }
 
-module.exports = { semAcento, cabecalhoDaVia, limpoTexto, printCupom, printReceipt, printTestCupom, getPrinters, getSerialPorts, setPrintParams, setActiveProfile, getActiveProfile, getActiveColumns, buildReceiptBuffer, buildPaginaTeste, familiaDoAlvo }
+module.exports = { PAUSA_VIAS_DARUMA_MS, printRaw, semAcento, cabecalhoDaVia, limpoTexto, printCupom, printReceipt, printTestCupom, getPrinters, getSerialPorts, setPrintParams, setActiveProfile, getActiveProfile, getActiveColumns, buildReceiptBuffer, buildPaginaTeste, familiaDoAlvo }
